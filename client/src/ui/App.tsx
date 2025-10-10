@@ -4,23 +4,28 @@ import { fetchAggregates, fetchLatest, fetchRecent, type Measurement, formatJP, 
 import Chart from './Chart'
 import './styles.css'
 
-type Proc = 'molding'|'packaging'
-type Gran = 'raw'|'1min'|'5min'|'default'
-type ScaleType = 'A'|'B'
-type Lang = 'en'|'ja'
+type Proc = 'molding' | 'packaging'
+type Gran = 'raw' | '1min' | '5min' | 'default'
+type Gramm = number
+type Deviation = number
+type ScaleType = 'A' | 'B'
+type Lang = 'en' | 'ja'
 
-const PROC_LABEL: Record<Proc,string> = { molding:'成型工程', packaging:'包装工程' }
-const GRAN_LABEL: Record<Gran,string> = { raw:'更新ごと', '1min':'1分平均', '5min':'5分平均', default:'既定（要件）' }
-const SCALE_LABEL: Record<ScaleType,string> = { A:'タイプA（現行）', B:'タイプB（準備中）' }
-const LANG_LABEL: Record<Lang,string> = { en:'EN', ja:'日本語' }
+const PROC_LABEL: Record<Proc, string> = { molding: '成型工程', packaging: '包装工程' }
+const GRAN_LABEL: Record<Gran, string> = { raw: '更新ごと', '1min': '1分平均', '5min': '5分平均', default: '既定（要件）' }
+const SCALE_LABEL: Record<ScaleType, string> = { A: 'タイプA（現行）', B: 'タイプB（準備中）' }
+const LANG_LABEL: Record<Lang, string> = { en: 'EN', ja: '日本語' }
 
 export default function App() {
   const [proc, setProc] = useState<Proc>('molding')
   const [gran, setGran] = useState<Gran>('default')
+  const [gramm, setGramm] = useState<Gramm>(60)
+  const [deviation, setDeviation] = useState<Deviation>(3)
+
   const [scaleType, setScaleType] = useState<ScaleType>('A')
   const [lang, setLang] = useState<Lang>('ja')
 
-  const [latest, setLatest] = useState<Measurement|null>(null)
+  const [latest, setLatest] = useState<Measurement | null>(null)
   const [labels, setLabels] = useState<string[]>([])
   const [values, setValues] = useState<number[]>([])
 
@@ -55,16 +60,16 @@ export default function App() {
         setLabels(xs); setValues(ys)
       } else if (gran === '1min') {
         const res = await fetchAggregates(proc, windowMin, 1)
-        setLabels(res.data.map((b:any)=>formatJP(b.bucket_start_utc)))
-        setValues(res.data.map((b:any)=>b.avg_weight ?? 0))
+        setLabels(res.data.map((b: any) => formatJP(b.bucket_start_utc)))
+        setValues(res.data.map((b: any) => b.avg_weight ?? 0))
       } else if (gran === '5min') {
         const res = await fetchAggregates(proc, windowMin, 5)
-        setLabels(res.data.map((b:any)=>formatJP(b.bucket_start_utc)))
-        setValues(res.data.map((b:any)=>b.avg_weight ?? 0))
+        setLabels(res.data.map((b: any) => formatJP(b.bucket_start_utc)))
+        setValues(res.data.map((b: any) => b.avg_weight ?? 0))
       } else {
         const res = await fetchAggregates(proc) // defaults: 60/15 or 20/5
-        setLabels(res.data.map((b:any)=>formatJP(b.bucket_start_utc)))
-        setValues(res.data.map((b:any)=>b.avg_weight ?? 0))
+        setLabels(res.data.map((b: any) => formatJP(b.bucket_start_utc)))
+        setValues(res.data.map((b: any) => b.avg_weight ?? 0))
       }
     } catch (e) {
       console.error('load error', e)
@@ -78,6 +83,14 @@ export default function App() {
   const pdfUrl = `http://localhost:3001/api/export/pdf?${qs}`
   const svgUrl = `http://localhost:3001/api/export/svg?${qs}`
 
+  function calculateMenuItem (amount: number, step: number = 1) {
+    let res = []
+    for (let i = 1; i <= amount; i = i + step) {
+      res.push({value: `${i}`, label: `${i}%`})
+    }
+    return res
+  }
+
   return (
     <div className="wrap">
       <header>
@@ -88,33 +101,55 @@ export default function App() {
       <div className="controls">
         <div className="control">
           <span className="ctl-label">工程</span>
-          <Select value={proc} onChange={v=>setProc(v as Proc)} options={[
-            { value:'molding', label: PROC_LABEL.molding },
-            { value:'packaging', label: PROC_LABEL.packaging },
-          ]}/>
+          <Select value={proc} onChange={v => setProc(v as Proc)} options={[
+            { value: 'molding', label: PROC_LABEL.molding },
+            { value: 'packaging', label: PROC_LABEL.packaging },
+          ]} />
         </div>
         <div className="control">
           <span className="ctl-label">粒度</span>
-          <Select value={gran} onChange={v=>setGran(v as Gran)} options={[
-            { value:'raw', label: GRAN_LABEL.raw },
-            { value:'1min', label: GRAN_LABEL['1min'] },
-            { value:'5min', label: GRAN_LABEL['5min'] },
-            { value:'default', label: GRAN_LABEL.default },
-          ]}/>
+          <Select value={gran} onChange={v => setGran(v as Gran)} options={[
+            { value: 'raw', label: GRAN_LABEL.raw },
+            { value: '1min', label: GRAN_LABEL['1min'] },
+            { value: '5min', label: GRAN_LABEL['5min'] },
+            { value: 'default', label: GRAN_LABEL.default },
+          ]} />
         </div>
         <div className="control">
           <span className="ctl-label">計量タイプ</span>
-          <Select value={scaleType} onChange={v=>setScaleType(v as ScaleType)} options={[
-            { value:'A', label: SCALE_LABEL.A },
-            { value:'B', label: SCALE_LABEL.B },
-          ]}/>
+          <Select value={scaleType} onChange={v => setScaleType(v as ScaleType)} options={[
+            { value: 'A', label: SCALE_LABEL.A },
+            { value: 'B', label: SCALE_LABEL.B },
+          ]} />
+        </div>
+        <div className="control">
+          <span className="ctl-label">目標重量</span>
+          <Select 
+          value={String(gramm)} 
+          onChange={(v: string)=> setGramm(Number(v) as Gramm)} 
+          options={[
+            { value: "10", label: "10g" },
+            { value: "20", label: "20g" },
+            { value: "40", label: "40g" },
+            { value: "60", label: "60g" },
+            { value: "80", label: "80g" },
+            { value: "100", label: "100g" },
+            { value: "120", label: "120g" },
+          ]} />
+        </div>
+        <div className="control">
+          <span className="ctl-label">重量許容範囲(%)</span>
+          <Select 
+          value={String(deviation)} 
+          onChange={(v: string)=> setDeviation(Number(v) as Deviation)} 
+          options={calculateMenuItem(100)} />
         </div>
         <div className="control">
           <span className="ctl-label">言語</span>
-          <Select value={lang} onChange={v=>setLang(v as Lang)} options={[
-            { value:'ja', label: LANG_LABEL.ja },
-            { value:'en', label: LANG_LABEL.en },
-          ]}/>
+          <Select value={lang} onChange={v => setLang(v as Lang)} options={[
+            { value: 'ja', label: LANG_LABEL.ja },
+            { value: 'en', label: LANG_LABEL.en },
+          ]} />
         </div>
         <div className="control">
           <a className="btn" href={csvUrl} target="_blank" rel="noreferrer">CSVダウンロード</a>
@@ -139,18 +174,18 @@ export default function App() {
 
       <section className="card">
         <h2>{PROC_LABEL[proc]} — {GRAN_LABEL[gran]}</h2>
-        <Chart labels={labels} values={values}/>
-        <small className="muted">ウィンドウ: {proc==='packaging' ? '直近20分' : '直近1時間'} ／ 粒度: {GRAN_LABEL[gran]}</small>
+        <Chart labels={labels} values={values} upperLimit={gramm + gramm/100*deviation} lowerLimit={gramm - gramm/100*deviation} showPointTimes={true} />
+        <small className="muted">ウィンドウ: {proc === 'packaging' ? '直近20分' : '直近1時間'} ／ 粒度: {GRAN_LABEL[gran]}</small>
       </section>
     </div>
   )
 }
 
-function Select({ value, onChange, options }:{ value:string, onChange:(v:string)=>void, options:{value:string,label:string}[] }){
+function Select({ value, onChange, options }: { value: string, onChange: (v: string) => void, options: { value: string, label: string }[] }) {
   return (
     <div className="select">
-      <select value={value} onChange={e=>onChange(e.target.value)}>
-        {options.map(o=> <option key={o.value} value={o.value}>{o.label}</option>)}
+      <select value={value} onChange={e => onChange(e.target.value)}>
+        {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
       </select>
     </div>
   )

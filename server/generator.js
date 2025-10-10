@@ -5,7 +5,7 @@ import axios from 'axios';
 const API = `http://localhost:${process.env.PORT || 3001}/api/ingest`;
 const TICK_MS = parseInt(process.env.GEN_TICK_MS || '500', 10);
 const AMP = parseFloat(process.env.GEN_AMP || '500');
-const NOISE = parseFloat(process.env.GEN_NOISE || '5');
+const NOISE = parseFloat(process.env.GEN_NOISE || '1');
 const MODE = (process.env.GEN_PROCESS || 'both').toLowerCase();
 
 let t = 0;
