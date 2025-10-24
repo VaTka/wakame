@@ -4,41 +4,35 @@ import express from 'express';
 import cors from 'cors';
 import sqlite3 from 'sqlite3';
 import { open } from 'sqlite';
+import { fileURLToPath } from 'node:url';
 import PDFDocument from 'pdfkit';
 import fs from 'fs';
 import path from 'path';
 
+const sqlite = sqlite3.verbose();
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data.sqlite');
+
 const PORT = process.env.PORT || 3001;
-const DB_PATH = process.env.DB_PATH || './data.sqlite';
 const ERROR_MIN = parseFloat(process.env.ERROR_MIN ?? '0');
 const ERROR_MAX = parseFloat(process.env.ERROR_MAX ?? '50000');
 const PDF_FONT = process.env.PDF_FONT || path.join(process.cwd(), 'fonts', 'NotoSansJP-Regular.ttf');
 const DEFAULT_PROCESS = process.env.DEFAULT_PROCESS || 'molding';
 
+
+
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '1mb' }));
 
-let db;
-(async () => {
-  db = await open({ filename: DB_PATH, driver: sqlite3.Database });
-  await db.exec(`
-    CREATE TABLE IF NOT EXISTS measurements (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      ts TEXT DEFAULT (datetime('now')), -- stored UTC
-      raw TEXT,
-      weight REAL,
-      unit TEXT,
-      status TEXT,
-      source TEXT,
-      process TEXT,      -- 'molding' | 'packaging' | null
-      stable INTEGER,    -- 0/1
-      is_error INTEGER   -- 0/1
-    );
-    CREATE INDEX IF NOT EXISTS idx_ts ON measurements(ts);
-    CREATE INDEX IF NOT EXISTS idx_process ON measurements(process);
-  `);
-})();
+export const db = new sqlite.Database(DB_PATH, (err) => {
+  if (err) {
+    console.error('DB open error:', err);
+    process.exit(1);
+  }
+});
 
 function detectError(weight) {
   if (weight == null || Number.isNaN(weight)) return 1;
@@ -142,70 +136,85 @@ app.post('/api/ingest', async (req, res) => {
   }
 });
 
+app.get('/api/health', (req, res) => {
+  res.json({ ok: true, pid: process.pid, time: Date.now() });
+});
 
 // GET /api/measurements
-app.get('/api/measurements', async (req, res) => {
-  try {
-    const limit = Math.min(parseInt(req.query.limit || '300', 10), 5000);
-    const proc = req.query.process || null;
-    const rows = proc
-      ? await db.all('SELECT * FROM measurements WHERE process = ? ORDER BY id DESC LIMIT ?', proc, limit)
-      : await db.all('SELECT * FROM measurements ORDER BY id DESC LIMIT ?', limit);
-    res.json({ ok: true, data: rows });
-  } catch (e) {
-    console.error('Query error:', e);
-    res.status(500).json({ error: 'Server error' });
-  }
+app.get('/api/measurements', (req, res) => {
+  const { where, params } = buildWhere(req.query);
+  const limit = Math.min(parseInt(req.query.limit || '500', 10), 5000);
+
+  const sql = `
+    SELECT id, ts, raw, weight, unit, status, source, process, stable, is_error
+    FROM measurements
+    ${where}
+    ORDER BY ts DESC
+    LIMIT ?
+  `;
+  db.all(sql, [...params, limit], (err, rows) => {
+    if (err) return res.status(500).json({ error: String(err) });
+    res.json({ items: rows });
+  });
 });
 
 // GET /api/measurements/latest
-app.get('/api/measurements/latest', async (req, res) => {
+app.get('/api/measurements/latest', (req, res) => {
   try {
-    const proc = req.query.process || null;
-    const row = proc
-      ? await db.get('SELECT * FROM measurements WHERE process = ? ORDER BY id DESC LIMIT 1', proc)
-      : await db.get('SELECT * FROM measurements ORDER BY id DESC LIMIT 1');
-    res.json({ ok: true, data: row || null });
+    const { where, params } = buildWhere({
+      ...req.query,
+      // гарантуємо skipZero за замовчуванням
+      skipZero: req.query.skipZero ?? '1'
+    });
+
+    const sql = `
+      SELECT id, ts, raw, weight, unit, status, source, process, stable, is_error
+      FROM measurements
+      ${where}
+      ORDER BY ts DESC
+      LIMIT 1
+    `;
+    db.get(sql, params, (err, row) => {
+      if (err) return res.status(500).json({ error: String(err) });
+      res.json({ item: row ?? null });
+    });
   } catch (e) {
-    console.error('Latest error:', e);
-    res.status(500).json({ error: 'Server error' });
+    res.status(500).json({ error: String(e) });
   }
 });
+
 
 // GET /api/aggregates
-app.get('/api/aggregates', async (req, res) => {
-  try {
-    const process = req.query.process || 'molding';
-    const defWindow = process === 'packaging' ? 20 : 60;
-    const defStep = process === 'packaging' ? 5 : 15;
-    const windowMin = Math.max(1, parseInt(req.query.windowMin || String(defWindow), 10));
-    const stepMin = Math.max(1, parseInt(req.query.stepMin || String(defStep), 10));
-
-    const rows = await db.all(`
-      WITH src AS (
-        SELECT * FROM measurements
-        WHERE process = ? AND ts >= datetime('now', ?)
-      ), bucketed AS (
-        SELECT CAST(strftime('%s', ts) / (?*60) AS INTEGER) * (?*60) AS bucket_epoch, weight
-        FROM src
-        WHERE weight IS NOT NULL AND is_error = 0
-      )
-      SELECT datetime(bucket_epoch, 'unixepoch') AS bucket_start_utc,
-             ROUND(AVG(weight), 1) AS avg_weight,
-             MIN(weight) AS min_weight,
-             MAX(weight) AS max_weight,
-             COUNT(*) AS count
-      FROM bucketed
-      GROUP BY bucket_epoch
-      ORDER BY bucket_epoch ASC;
-    `, [process, `-${windowMin} minutes`, stepMin, stepMin]);
-
-    res.json({ ok: true, data: rows, windowMin, stepMin });
-  } catch (e) {
-    console.error('Aggregates error:', e);
-    res.status(500).json({ error: 'Server error' });
-  }
+app.get('/api/aggregates', (req, res) => {
+  const { where, params } = buildWhere(req.query);
+  const binSec = parseInt(req.query.binSec || '300', 10); // напр., 300 = 5 хв
+  // Важливо: ts у нас у мс → ділимо на 1000
+  const sql = `
+    WITH base AS (
+      SELECT ts, weight
+      FROM measurements
+      ${where}
+    ),
+    buckets AS (
+      SELECT 
+        CAST((ts / 1000) / ? AS INTEGER) AS bucket,
+        weight
+      FROM base
+    )
+    SELECT 
+      bucket,
+      AVG(weight) AS avg_weight,
+      COUNT(*)   AS n
+    FROM buckets
+    GROUP BY bucket
+    ORDER BY bucket ASC
+  `;
+  db.all(sql, [binSec, ...params], (err, rows) => {
+    if (err) return res.status(500).json({ error: String(err) });
+    res.json({ items: rows, binSec });
+  });
 });
+
 
 // CSV export (robust quoting + CRLF + BOM)
 app.get('/api/export/csv', async (req, res) => {
@@ -436,3 +445,31 @@ app.get('/api/export/svg', async (req, res) => {
 });
 
 app.listen(PORT, () => console.log(`API listening on http://localhost:${PORT}`));
+
+function toMs(v) {
+  if (v == null) return undefined;
+  const n = Number(v);
+  if (Number.isFinite(n)) return n;
+  const d = Date.parse(String(v));
+  return Number.isFinite(d) ? d : undefined;
+}
+
+function buildWhere(q = {}) {
+  const cond = [], params = [];
+  if (q.process) { cond.push('process = ?'); params.push(q.process); }
+  const from = toMs(q.from), to = toMs(q.to);
+  if (from !== undefined) { cond.push('ts >= ?'); params.push(from); }
+  if (to !== undefined) { cond.push('ts <= ?'); params.push(to); }
+  const skipZero = q.skipZero === undefined ? true : q.skipZero === '1' || q.skipZero === true;
+  if (skipZero) cond.push('weight IS NOT NULL AND weight != 0');
+  const skipUnstable = q.skipUnstable === '1' || q.skipUnstable === true;
+  if (skipUnstable) cond.push('(stable IS NULL OR stable = 1)');
+  const where = cond.length ? `WHERE ${cond.join(' AND ')}` : '';
+  return { where, params };
+}
+
+db.serialize(() => {
+  db.run('PRAGMA journal_mode=WAL;');      // читаємо під час запису
+  db.run('PRAGMA synchronous=NORMAL;');
+  db.run('PRAGMA busy_timeout=5000;');     // почекай до 5с, а не зависай навічно
+});

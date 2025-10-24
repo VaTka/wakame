@@ -6,9 +6,10 @@ type Props = {
   upperLimit?: number
   lowerLimit?: number
   showPointTimes?: boolean
+  target?: number
 }
 
-export default function Chart({ labels, values, upperLimit, lowerLimit, showPointTimes }: Props) {
+export default function Chart({ labels, values, upperLimit, lowerLimit, showPointTimes, target }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
 
   useEffect(() => {
@@ -83,6 +84,19 @@ export default function Chart({ labels, values, upperLimit, lowerLimit, showPoin
     if (typeof upperLimit === 'number') maxY = Math.max(maxY, upperLimit)
     if (typeof lowerLimit === 'number') minY = Math.min(minY, lowerLimit)
 
+    const hasTargetProp = typeof target === 'number' && Number.isFinite(target)
+    const targetY = hasTargetProp
+      ? target as number
+      : (typeof upperLimit === 'number' && typeof lowerLimit === 'number'
+        ? (upperLimit + lowerLimit) / 2
+        : undefined)
+
+    if (typeof targetY === 'number' && !(typeof upperLimit === 'number' && typeof lowerLimit === 'number')) {
+      minY = Math.min(minY, targetY)
+      maxY = Math.max(maxY, targetY)
+    }
+
+
     let yMin: number, yMax: number
 
     if (typeof upperLimit === 'number' && typeof lowerLimit === 'number') {
@@ -121,6 +135,26 @@ export default function Chart({ labels, values, upperLimit, lowerLimit, showPoin
       ctx.fillStyle = 'rgba(255, 165, 0, 0.08)'
       ctx.fillRect(L, yL, PW, (h - B) - yL)
     }
+
+    // --- лінія цільового значення ---
+    if (typeof targetY === 'number' && Number.isFinite(targetY)) {
+      const yT = mapY(targetY)
+      ctx.save()
+      ctx.strokeStyle = '#34d399'           // спокійний зелений
+      ctx.lineWidth = 1.5
+      ctx.setLineDash([2, 2])               // відрізняється від меж ([6,4])
+      ctx.beginPath()
+      ctx.moveTo(L, yT)
+      ctx.lineTo(w - R, yT)
+      ctx.stroke()
+
+      // підпис на правому краї
+      ctx.fillStyle = '#34d399'
+      ctx.font = '11px -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial'
+      ctx.fillText(`目標 ${targetY.toFixed(1)} g`, w - R - 140, yT - 6)
+      ctx.restore()
+    }
+
 
     // --- порогові лінії (пунктир) ---
     ctx.save()
@@ -162,7 +196,8 @@ export default function Chart({ labels, values, upperLimit, lowerLimit, showPoin
     ctx.strokeStyle = '#4da3ff'
     ctx.stroke()
 
-    const maxDots = 800; // щоб не гальмувало на дуже довгих серіях
+    // точки (зональне фарбування відносно target / меж)
+    const maxDots = 800;
     const stepDots = Math.max(1, Math.ceil(n / maxDots));
 
     for (let i = 0; i < n; i += stepDots) {
@@ -170,11 +205,30 @@ export default function Chart({ labels, values, upperLimit, lowerLimit, showPoin
       const x = mapX(i, n);
       const y = mapY(v);
 
-      const outHigh = typeof upperLimit === 'number' && v > upperLimit;
-      const outLow = typeof lowerLimit === 'number' && v < lowerLimit;
+      const hasUpper = typeof upperLimit === 'number' && Number.isFinite(upperLimit);
+      const hasLower = typeof lowerLimit === 'number' && Number.isFinite(lowerLimit);
+      const hasTarget = typeof targetY === 'number' && Number.isFinite(targetY);
+
+      const outHigh = hasUpper && v > (upperLimit as number);
+      const outLow = hasLower && v < (lowerLimit as number);
+      const match = hasTarget && v == (lowerLimit as number);
+
+
+      // класи зони: поза межами / між target і upper / між lower і target / нейтрал
+      let fill = '#7dd3fc'; // дефолт (в межах і без target)
+      if (outHigh) {
+        fill = '#ff6b6b';
+      }
+      else if (outLow) {
+        fill = '#ffc061';
+      }
+      else if (hasTarget) {
+        if (v > (targetY as number)) fill = '#a78bfa';   // ↑ вища за ціль, але в межах (фіолетовий)
+        else if (v < (targetY as number)) fill = '#0ea5e9'; // ↓ нижча за ціль, але в межах (блакитний)
+        else if (v == (targetY as number)) fill = '#EFBF04'; // 
+      }
 
       const radius = (outHigh || outLow) ? 3.8 : 3.2;
-      const fill = outHigh ? '#ff6b6b' : outLow ? '#ffc061' : '#7dd3fc'; // червоний/помаранчевий/блакитний
 
       ctx.beginPath();
       ctx.arc(x, y, radius, 0, Math.PI * 2);
@@ -182,9 +236,28 @@ export default function Chart({ labels, values, upperLimit, lowerLimit, showPoin
       ctx.fill();
 
       ctx.lineWidth = 1;
-      ctx.strokeStyle = 'rgba(0,0,0,0.35)'; // тонка обводка для контрасту
+      ctx.strokeStyle = 'rgba(0,0,0,0.35)';
       ctx.stroke();
+
+      // --- підпис ваги під точкою ---
+      // текст: одна десяткова + "g" (можеш прибрати "g", якщо не треба)
+      const text = `${v.toFixed(1)} g`;
+
+      // позиція підпису (під точкою, але не виходимо за низом графіка)
+      let ty = y + 3*6;
+      const bottomLimit = h - B;                    // низ поля побудови
+      const lineH = 12;                             // висота рядка для 10px
+      // if (ty + lineH > bottomLimit) ty = y - 6 - lineH;  // якщо не влазить знизу — малюємо над точкою
+
+      // легкий "halo" для читабельності: спочатку strokeText темним, потім fillText світлим
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+      ctx.strokeText(text, x, ty);
+
+      // ctx.fillStyle = '#e6eef7';
+      ctx.fillText(text, x, ty);
     }
+
 
     // --- X-підписи (рідше) ---
     ctx.fillStyle = '#98a6b3'
@@ -262,6 +335,9 @@ export default function Chart({ labels, values, upperLimit, lowerLimit, showPoin
         ctx.fillText(text, tx + padX, ty - padY);
       }
     }
+
+
+
   }, [labels, values, upperLimit, lowerLimit])
 
   // ширину краще віддати на розсуд контейнера

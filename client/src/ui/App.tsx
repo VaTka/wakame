@@ -1,6 +1,6 @@
 
 import React, { useEffect, useMemo, useState } from 'react'
-import { fetchAggregates, fetchLatest, fetchRecent, type Measurement, formatJP, fmt1 } from '../api'
+import { fetchAggregates, fetchLatest, fetchRecent, type Measurement, formatJP, fmt1, fetchMeasurements } from '../api'
 import Chart from './Chart'
 import './styles.css'
 
@@ -50,26 +50,36 @@ export default function App() {
 
   async function load() {
     try {
-      const lat = await fetchLatest(proc)
-      setLatest(lat)
+      console.log("HERe")
+      const lat = await fetchLatest(proc);
+      setLatest(lat); // тепер це або Measurement, або null
+      console.log(lat, gran)
 
       if (gran === 'raw') {
-        const rec = await fetchRecent(proc, 300)
-        const xs = rec.map(r => formatJP(r.ts)).reverse()
-        const ys = rec.map(r => (r.weight ?? 0)).reverse()
-        setLabels(xs); setValues(ys)
+        const rec = await fetchRecent(proc, 300);
+        const recClean = rec.filter(r => Number.isFinite(r.weight) && r.weight !== 0);
+        const xs = recClean.map(r => formatJP(r.ts)).reverse();
+        const ys = recClean.map(r => r.weight as number).reverse();
+        setLabels(xs);
+        setValues(ys);
       } else if (gran === '1min') {
-        const res = await fetchAggregates(proc, windowMin, 1)
-        setLabels(res.data.map((b: any) => formatJP(b.bucket_start_utc)))
-        setValues(res.data.map((b: any) => b.avg_weight ?? 0))
+        const res = await fetchMeasurements({ process: proc, limit: windowMin });
+        const items = res.data ?? [];
+        const clean = items.filter((b: any) => Number.isFinite(b.avg_weight) && b.avg_weight !== 0);
+        setLabels(clean.map((b: any) => formatJP(b.bucket_start_utc)));
+        setValues(clean.map((b: any) => b.avg_weight));
       } else if (gran === '5min') {
-        const res = await fetchAggregates(proc, windowMin, 5)
-        setLabels(res.data.map((b: any) => formatJP(b.bucket_start_utc)))
-        setValues(res.data.map((b: any) => b.avg_weight ?? 0))
+        const res = await fetchMeasurements({ process: proc, limit: windowMin });
+        const items = res.data ?? [];
+        const clean = items.filter((b: any) => Number.isFinite(b.avg_weight) && b.avg_weight !== 0);
+        setLabels(clean.map((b: any) => formatJP(b.bucket_start_utc)));
+        setValues(clean.map((b: any) => b.avg_weight));
       } else {
-        const res = await fetchAggregates(proc) // defaults: 60/15 or 20/5
-        setLabels(res.data.map((b: any) => formatJP(b.bucket_start_utc)))
-        setValues(res.data.map((b: any) => b.avg_weight ?? 0))
+        const res = await fetchMeasurements({ process: proc }); // defaults: 60/15 or 20/5
+        const items = res.data ?? [];
+        const clean = items.filter((b: any) => Number.isFinite(b.avg_weight) && b.avg_weight !== 0);
+        setLabels(clean.map((b: any) => formatJP(b.bucket_start_utc)));
+        setValues(clean.map((b: any) => b.avg_weight));
       }
     } catch (e) {
       console.error('load error', e)
@@ -83,13 +93,28 @@ export default function App() {
   const pdfUrl = `http://localhost:3001/api/export/pdf?${qs}`
   const svgUrl = `http://localhost:3001/api/export/svg?${qs}`
 
-  function calculateMenuItem (amount: number, step: number = 1) {
+  function calculateMenuItem(amount: number, step: number = 1) {
     let res = []
     for (let i = 1; i <= amount; i = i + step) {
-      res.push({value: `${i}`, label: `${i}%`})
+      res.push({ value: `${i}`, label: `${i}%` })
     }
     return res
   }
+
+  const latestWeight = latest?.weight ?? null
+  const targetWeight = Number(gramm || 0)
+
+  const hasBounds = Number.isFinite(targetWeight) && Number.isFinite(deviation) && targetWeight > 0;
+  const upper = hasBounds ? targetWeight * (1 + deviation / 100) : null;
+  const lower = hasBounds ? targetWeight * (1 - deviation / 100) : null;
+
+  const isHigh = latestWeight != null && upper != null && latestWeight > upper;
+  const isLow = latestWeight != null && lower != null && latestWeight < lower;
+  const outOfRange = isHigh || isLow;
+
+  const pctDiff = (latestWeight != null && targetWeight > 0)
+    ? ((latestWeight - targetWeight) / targetWeight) * 100
+    : null;
 
   return (
     <div className="wrap">
@@ -124,25 +149,30 @@ export default function App() {
         </div>
         <div className="control">
           <span className="ctl-label">目標重量</span>
-          <Select 
-          value={String(gramm)} 
-          onChange={(v: string)=> setGramm(Number(v) as Gramm)} 
-          options={[
-            { value: "10", label: "10g" },
-            { value: "20", label: "20g" },
-            { value: "40", label: "40g" },
-            { value: "60", label: "60g" },
-            { value: "80", label: "80g" },
-            { value: "100", label: "100g" },
-            { value: "120", label: "120g" },
-          ]} />
+          <Select
+            value={String(gramm)}
+            onChange={(v: string) => setGramm(Number(v) as Gramm)}
+            options={[
+              { value: "10", label: "10g" },
+              { value: "20", label: "20g" },
+              { value: "40", label: "40g" },
+              { value: "60", label: "60g" },
+              { value: "80", label: "80g" },
+              { value: "100", label: "100g" },
+              { value: "120", label: "120g" },
+              { value: "140", label: "140g" },
+              { value: "160", label: "160g" },
+              { value: "180", label: "180g" },
+              { value: "200", label: "200g" },
+              { value: "300", label: "300g" },
+            ]} />
         </div>
         <div className="control">
           <span className="ctl-label">重量許容範囲(%)</span>
-          <Select 
-          value={String(deviation)} 
-          onChange={(v: string)=> setDeviation(Number(v) as Deviation)} 
-          options={calculateMenuItem(100)} />
+          <Select
+            value={String(deviation)}
+            onChange={(v: string) => setDeviation(Number(v) as Deviation)}
+            options={calculateMenuItem(100)} />
         </div>
         <div className="control">
           <span className="ctl-label">言語</span>
@@ -166,15 +196,38 @@ export default function App() {
 
       <section className="cards">
         <div className="card">
-          <div className="label">{PROC_LABEL[proc]} - 最新値</div>
-          <div className="value">{fmt1(latest?.weight)} <span className="unit">g</span></div>
-          <div className="meta">{latest ? `${formatJP(latest.ts)} ／ 安定:${latest.stable ? 'はい' : '—'}` : '—'}</div>
+          <div className="card-head">
+            <div className="label">{PROC_LABEL[proc]} - 最新値</div>
+
+            {outOfRange && (
+              <div
+                className={`badge ${isHigh ? 'bad-high' : 'bad-low'}`}
+                title={
+                  `Target ${targetWeight} g • ` +
+                  (pctDiff != null ? `${pctDiff >= 0 ? '+' : ''}${pctDiff.toFixed(1)}%` : '')
+                }
+              >
+                <span className="dot" />
+                <span className="badge-text">{isHigh ? '上限超過' : '下限未満'}</span>
+                {pctDiff != null && (
+                  <span className="pct">{pctDiff >= 0 ? '+' : ''}{pctDiff.toFixed(1)}%</span>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="value">
+            {fmt1(latest?.weight)} <span className="unit">g</span>
+          </div>
+          <div className="meta">
+            {latest ? `${formatJP(latest.ts)} ／ 安定:${latest.stable ? 'はい' : '—'}` : '—'}
+          </div>
         </div>
       </section>
 
       <section className="card">
         <h2>{PROC_LABEL[proc]} — {GRAN_LABEL[gran]}</h2>
-        <Chart labels={labels} values={values} upperLimit={gramm + gramm/100*deviation} lowerLimit={gramm - gramm/100*deviation} showPointTimes={true} />
+        <Chart labels={labels} values={values} upperLimit={gramm + gramm / 100 * deviation} lowerLimit={gramm - gramm / 100 * deviation} showPointTimes={true} target={gramm} />
         <small className="muted">ウィンドウ: {proc === 'packaging' ? '直近20分' : '直近1時間'} ／ 粒度: {GRAN_LABEL[gran]}</small>
       </section>
     </div>
