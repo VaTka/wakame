@@ -1,8 +1,54 @@
-
 import React, { useEffect, useMemo, useState } from 'react'
 import { fetchAggregates, fetchLatest, fetchRecent, type Measurement, formatJP, fmt1, fetchMeasurements } from '../api'
 import Chart from './Chart'
 import './styles.css'
+
+const DEBUG = true;
+const dlog = (...args: any[]) => { if (DEBUG) console.log('[APP]', ...args); };
+
+// Backend returns timestamps like "YYYY-MM-DD HH:mm:ss" in UTC. Parse as UTC.
+function parseUtcMs(ts: string): number {
+  if (!ts) return NaN;
+  // Normalize: "2025-10-24 04:47:02" -> "2025-10-24T04:47:02Z"
+  const iso = ts.includes('T') ? ts.replace(' ', 'T').replace(/$/,'Z') : ts.replace(' ', 'T') + 'Z';
+  const ms = Date.parse(iso);
+  return ms;
+}
+
+// Bucket raw measurements into fixed-minute intervals (UTC-based) with average per bucket.
+function bucketize(meas: { ts: string; weight: number }[], stepMin: number, windowMin: number) {
+  const now = Date.now();
+  const fromMs = now - windowMin * 60 * 1000;
+  const stepMs = stepMin * 60 * 1000;
+  const map = new Map<number, { sum: number; cnt: number; ts: number }>();
+  for (const m of meas) {
+    const ms = parseUtcMs(m.ts);
+    if (!Number.isFinite(ms) || ms < fromMs || ms > now) continue;
+    const bucket = Math.floor(ms / stepMs) * stepMs;
+    const prev = map.get(bucket) || { sum: 0, cnt: 0, ts: bucket };
+    prev.sum += m.weight;
+    prev.cnt += 1;
+    map.set(bucket, prev);
+  }
+  const buckets = Array.from(map.values()).sort((a,b) => a.ts - b.ts);
+  return buckets.map(b => ({ t: new Date(b.ts).toISOString(), v: b.cnt ? b.sum / b.cnt : 0 }));
+}
+
+// Safe label formatter for Japanese locale, never returns "Invalid Date"
+function formatJPLabel(ts: string): string {
+  const ms = parseUtcMs(ts);
+  if (!Number.isFinite(ms)) return String(ts ?? '');
+  return new Date(ms).toLocaleString('ja-JP', {
+    timeZone: 'Asia/Tokyo',
+    hour12: false,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+}
 
 type Proc = 'molding' | 'packaging'
 type Gran = 'raw' | '1min' | '5min' | 'default'
@@ -32,66 +78,182 @@ export default function App() {
   const windowMin = useMemo(() => proc === 'packaging' ? 20 : 60, [proc])
 
   function buildExportQS() {
+    dlog('buildExportQS start', { proc, gran, lang });
     const qs = new URLSearchParams({ process: proc, lang })
-    if (gran === '1min') {
-      qs.set('windowMin', (proc === 'packaging' ? 20 : 60).toString())
-      qs.set('stepMin', '1')
-    } else if (gran === '5min') {
-      qs.set('windowMin', (proc === 'packaging' ? 20 : 60).toString())
-      qs.set('stepMin', '5')
-    } else if (gran === 'raw') {
-      qs.set('windowMin', (proc === 'packaging' ? 20 : 60).toString())
+    if (gran === 'raw') {
+      // 粒度1: показувати останні 3 хв, сирі точки
+      qs.set('windowMin', '3')
       qs.set('stepMin', '1')
       qs.set('includeRaw', '1')
-      qs.set('rawLimit', '300')
+      qs.set('rawLimit', '500')
+    } else if (gran === '1min') {
+      // 粒度2: остання 1 година, бін 1 хв
+      qs.set('windowMin', '60')
+      qs.set('stepMin', '1')
+    } else if (gran === '5min') {
+      // 粒度3: останні 3 години, бін 5 хв
+      qs.set('windowMin', '180')
+      qs.set('stepMin', '5')
+    } else {
+      // 既定（要件）: останні 24 години, бін 30 хв
+      qs.set('windowMin', '1440')
+      qs.set('stepMin', '30')
     }
+    dlog('buildExportQS result', Object.fromEntries(qs.entries()));
     return qs.toString()
   }
 
   async function load() {
     try {
-      console.log("HERe")
+      console.time('load');
+      dlog('load start', { proc, gran });
+      dlog('HERe');
       const lat = await fetchLatest(proc);
-      setLatest(lat); // тепер це або Measurement, або null
-      console.log(lat, gran)
+      setLatest(lat);
+      dlog('setLatest called with', lat);
+      // keep previous latest on intermittent nulls
+      if (!lat) {
+        // do not early-return; allow series update, but avoid using null latest downstream
+      }
+      dlog('latest', lat, 'gran', gran)
 
       if (gran === 'raw') {
-        const rec = await fetchRecent(proc, 300);
-        const recClean = rec.filter(r => Number.isFinite(r.weight) && r.weight !== 0);
-        const xs = recClean.map(r => formatJP(r.ts)).reverse();
-        const ys = recClean.map(r => r.weight as number).reverse();
-        setLabels(xs);
-        setValues(ys);
+        // 粒度1: останні 3 хв (сирі виміри)
+        const rec = await fetchRecent(proc, 500);
+        dlog('raw branch: rec count', rec?.length);
+        const now = Date.now();
+        const threeMinAgo = now - 3 * 60 * 1000;
+        const recClean = rec
+          .filter(r => {
+            const okW = Number.isFinite(r.weight) && r.weight !== 0;
+            const ms = parseUtcMs(r.ts as any);
+            const okT = Number.isFinite(ms) && ms >= threeMinAgo;
+            if (!okT) dlog('raw drop by time', { ts: r.ts, ms, threeMinAgo });
+            if (!okW) dlog('raw drop by weight', { weight: r.weight, ts: r.ts });
+            return okW && okT;
+          })
+          .sort((a,b) => new Date(a.ts).getTime() - new Date(b.ts).getTime());
+        dlog('raw branch: recClean count', recClean.length, 'first', recClean[0]?.ts, 'last', recClean[recClean.length-1]?.ts);
+        if (recClean.length > 0) {
+          const minMs = Math.min(...recClean.map(r => parseUtcMs(r.ts as any)));
+          const maxMs = Math.max(...recClean.map(r => parseUtcMs(r.ts as any)));
+          dlog('raw branch: window ms', { threeMinAgo, minMs, maxMs, now });
+        }
+        const newLabels = recClean.map(r => formatJPLabel(r.ts));
+        const newValues = recClean.map(r => r.weight as number);
+        dlog('raw branch: newValues length', newValues.length);
+        if (newValues.length > 0) {
+          dlog('raw branch: updating state');
+          setLabels(newLabels);
+          setValues(newValues);
+        } else {
+          dlog('raw branch: skip state update (empty slice)');
+        }
       } else if (gran === '1min') {
-        const res = await fetchMeasurements({ process: proc, limit: windowMin });
+        // 粒度2: показувати останню 1 годину, оновлення щохвилини
+        const res = await fetchMeasurements({ process: proc, windowMin: 60, stepMin: 1 });
         const items = res.data ?? [];
+        dlog('1min branch: items length', items.length);
         const clean = items.filter((b: any) => Number.isFinite(b.avg_weight) && b.avg_weight !== 0);
-        setLabels(clean.map((b: any) => formatJP(b.bucket_start_utc)));
-        setValues(clean.map((b: any) => b.avg_weight));
+        dlog('1min branch: clean length', clean.length, 'first', clean[0]?.bucket_start_utc, 'last', clean[clean.length-1]?.bucket_start_utc);
+        let newLabels: string[];
+        let newValues: number[];
+        if (clean.length === 0) {
+          dlog('1min branch: API empty, falling back to client bucketing from recent raw');
+          const rec = await fetchRecent(proc, 1800);
+          const recClean = rec.filter(r => Number.isFinite(r.weight) && r.weight !== 0);
+          const buckets = bucketize(recClean as any, 1, 60);
+          newLabels = buckets.map(b => formatJPLabel(b.t));
+          newValues = buckets.map(b => b.v);
+        } else {
+          newLabels = clean.map((b: any) => formatJPLabel(b.bucket_start_utc));
+          newValues = clean.map((b: any) => b.avg_weight);
+        }
+        dlog('1min branch: after select source', { source: clean.length === 0 ? 'fallback:recent' : 'api', len: newValues.length });
+        if (newValues.length > 0) {
+          dlog('1min branch: updating state');
+          setLabels(newLabels);
+          setValues(newValues);
+        } else {
+          dlog('1min branch: skip state update (empty slice)');
+        }
       } else if (gran === '5min') {
-        const res = await fetchMeasurements({ process: proc, limit: windowMin });
+        // 粒度3: показувати останні 3 години, оновлення кожні 5 хв
+        const res = await fetchMeasurements({ process: proc, windowMin: 180, stepMin: 5 });
         const items = res.data ?? [];
+        dlog('5min branch: items length', items.length);
         const clean = items.filter((b: any) => Number.isFinite(b.avg_weight) && b.avg_weight !== 0);
-        setLabels(clean.map((b: any) => formatJP(b.bucket_start_utc)));
-        setValues(clean.map((b: any) => b.avg_weight));
+        dlog('5min branch: clean length', clean.length, 'first', clean[0]?.bucket_start_utc, 'last', clean[clean.length-1]?.bucket_start_utc);
+        let newLabels: string[];
+        let newValues: number[];
+        if (clean.length === 0) {
+          dlog('5min branch: API empty, falling back to client bucketing from recent raw');
+          const rec = await fetchRecent(proc, 3000);
+          const recClean = rec.filter(r => Number.isFinite(r.weight) && r.weight !== 0);
+          const buckets = bucketize(recClean as any, 5, 180);
+          newLabels = buckets.map(b => formatJPLabel(b.t));
+          newValues = buckets.map(b => b.v);
+        } else {
+          newLabels = clean.map((b: any) => formatJPLabel(b.bucket_start_utc));
+          newValues = clean.map((b: any) => b.avg_weight);
+        }
+        dlog('5min branch: after select source', { source: clean.length === 0 ? 'fallback:recent' : 'api', len: newValues.length });
+        if (newValues.length > 0) {
+          dlog('5min branch: updating state');
+          setLabels(newLabels);
+          setValues(newValues);
+        } else {
+          dlog('5min branch: skip state update (empty slice)');
+        }
       } else {
-        const res = await fetchMeasurements({ process: proc }); // defaults: 60/15 or 20/5
+        // 既定（要件）: показувати останні 24 години, оновлення кожні 30 хв
+        const res = await fetchMeasurements({ process: proc, windowMin: 1440, stepMin: 30 });
         const items = res.data ?? [];
+        dlog('default branch: items length', items.length);
         const clean = items.filter((b: any) => Number.isFinite(b.avg_weight) && b.avg_weight !== 0);
-        setLabels(clean.map((b: any) => formatJP(b.bucket_start_utc)));
-        setValues(clean.map((b: any) => b.avg_weight));
+        dlog('default branch: clean length', clean.length, 'first', clean[0]?.bucket_start_utc, 'last', clean[clean.length-1]?.bucket_start_utc);
+        const newLabels = clean.map((b: any) => formatJPLabel(b.bucket_start_utc));
+        const newValues = clean.map((b: any) => b.avg_weight);
+        dlog('default branch: newValues length', newValues.length);
+        if (newValues.length > 0) {
+          dlog('default branch: updating state');
+          setLabels(newLabels);
+          setValues(newValues);
+        } else {
+          dlog('default branch: skip state update (empty slice)');
+        }
       }
+      console.timeEnd('load');
     } catch (e) {
       console.error('load error', e)
     }
   }
 
-  useEffect(() => { load(); const id = setInterval(load, 2000); return () => clearInterval(id) }, [proc, gran])
+  const intervalMs = useMemo(() => {
+    let val: number;
+    if (gran === 'raw') val = 2000;
+    else if (gran === '1min') val = 60_000;
+    else if (gran === '5min') val = 5 * 60_000;
+    else val = 30 * 60_000;
+    dlog('intervalMs computed', { gran, intervalMs: val });
+    return val;
+  }, [gran]);
+
+  useEffect(() => {
+    dlog('interval effect start', { proc, gran, intervalMs });
+    load();
+    const id = setInterval(load, intervalMs);
+    return () => {
+      clearInterval(id);
+      dlog('interval cleared');
+    };
+  }, [proc, gran, intervalMs]);
 
   const qs = buildExportQS()
   const csvUrl = `http://localhost:3001/api/export/csv?${qs}`
   const pdfUrl = `http://localhost:3001/api/export/pdf?${qs}`
   const svgUrl = `http://localhost:3001/api/export/svg?${qs}`
+  dlog('export URLs', { csvUrl, pdfUrl, svgUrl });
 
   function calculateMenuItem(amount: number, step: number = 1) {
     let res = []
@@ -220,7 +382,7 @@ export default function App() {
             {fmt1(latest?.weight)} <span className="unit">g</span>
           </div>
           <div className="meta">
-            {latest ? `${formatJP(latest.ts)} ／ 安定:${latest.stable ? 'はい' : '—'}` : '—'}
+            {latest ? `${formatJPLabel(latest.ts)} ／ 安定:${latest.stable ? 'はい' : '—'}` : '—'}
           </div>
         </div>
       </section>
@@ -228,7 +390,7 @@ export default function App() {
       <section className="card">
         <h2>{PROC_LABEL[proc]} — {GRAN_LABEL[gran]}</h2>
         <Chart labels={labels} values={values} upperLimit={gramm + gramm / 100 * deviation} lowerLimit={gramm - gramm / 100 * deviation} showPointTimes={true} target={gramm} />
-        <small className="muted">ウィンドウ: {proc === 'packaging' ? '直近20分' : '直近1時間'} ／ 粒度: {GRAN_LABEL[gran]}</small>
+        <small className="muted">ウィンドウ: {gran === 'raw' ? '直近3分' : gran === '1min' ? '直近1時間' : gran === '5min' ? '直近3時間' : '直近24時間'} ／ 粒度: {GRAN_LABEL[gran]}</small>
       </section>
     </div>
   )
@@ -237,7 +399,7 @@ export default function App() {
 function Select({ value, onChange, options }: { value: string, onChange: (v: string) => void, options: { value: string, label: string }[] }) {
   return (
     <div className="select">
-      <select value={value} onChange={e => onChange(e.target.value)}>
+      <select value={value} onChange={e => { dlog('Select change', { from: value, to: e.target.value }); onChange(e.target.value) }}>
         {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
       </select>
     </div>

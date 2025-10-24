@@ -1,5 +1,8 @@
 import React, { useEffect, useRef } from 'react'
 
+const DEBUG = true;
+const dlog = (...args: any[]) => { if (DEBUG) console.log('[CHART]', ...args); };
+
 type Props = {
   labels: string[]
   values: number[]
@@ -13,6 +16,7 @@ export default function Chart({ labels, values, upperLimit, lowerLimit, showPoin
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
 
   useEffect(() => {
+    dlog('render start', { labelsLen: labels.length, valuesLen: values.length, upperLimit, lowerLimit, target, showPointTimes });
     const canvas = canvasRef.current
     if (!canvas) return
     const ctx = canvas.getContext('2d')
@@ -54,31 +58,19 @@ export default function Chart({ labels, values, upperLimit, lowerLimit, showPoin
     ctx.stroke()
 
     // --- дані ---
+    // Об'єднуємо в одну послідовність, щоб не розсинхронювати дати й значення
+    const data: { t: string; v: number }[] = labels.map((t, i) => ({ t, v: Number(values[i]) }))
+      .filter(d => Number.isFinite(d.v));
+    if (data.length === 0) return;
+    dlog('data built', { count: data.length, first: data[0], last: data[data.length-1] });
 
-    const now = Date.now();
-    const tenMinAgo = now - 1 * 60 * 1000;
-
-    const filtered: { t: string; v: number }[] = [];
-
-    for (let i = 0; i < labels.length; i++) {
-      const ts = new Date(labels[i]).getTime();
-      if (!isNaN(ts) && ts >= tenMinAgo) {
-        filtered.push({ t: labels[i], v: values[i] });
-      }
-    }
-
-    // якщо дані після фільтрації є — використовуємо їх
-    const labels10 = filtered.length ? filtered.map(f => f.t) : labels;
-    const values10 = filtered.length ? filtered.map(f => f.v) : values;
-
-
-    // const nums = values.map(Number).filter(v => Number.isFinite(v))
-    const nums = values10.map(Number).filter(v => Number.isFinite(v));
-    if (nums.length === 0) return
+    // З окремих масивів беремо тільки те, що реально малюємо
+    const nums = data.map(d => d.v);
 
     // --- адаптивне масштабування з урахуванням порогів ---
     let minY = Math.min(...nums)
     let maxY = Math.max(...nums)
+    dlog('value stats', { min: minY, max: maxY });
 
     // включаємо порогові значення в розрахунок
     if (typeof upperLimit === 'number') maxY = Math.max(maxY, upperLimit)
@@ -115,6 +107,7 @@ export default function Chart({ labels, values, upperLimit, lowerLimit, showPoin
       yMin = minY - pad
       yMax = maxY + pad
     }
+    dlog('y-scale', { yMin, yMax });
 
     const ySpan = Math.max(1e-6, yMax - yMin)
 
@@ -184,12 +177,14 @@ export default function Chart({ labels, values, upperLimit, lowerLimit, showPoin
     // --- основна лінія (малюємо ОСТАННЬОЮ) ---
     ctx.beginPath()
     const n = nums.length
-    nums.forEach((v, i) => {
+    dlog('draw line', { n });
+    for (let i = 0; i < n; i++) {
+      const v = data[i].v;
       const x = mapX(i, n)
       const y = mapY(v)
       if (i === 0) ctx.moveTo(x, y)
       else ctx.lineTo(x, y)
-    })
+    }
     ctx.lineWidth = 2
     ctx.lineJoin = 'round'
     ctx.lineCap = 'round'
@@ -201,9 +196,10 @@ export default function Chart({ labels, values, upperLimit, lowerLimit, showPoin
     const stepDots = Math.max(1, Math.ceil(n / maxDots));
 
     for (let i = 0; i < n; i += stepDots) {
-      const v = nums[i];
+      const v = data[i].v;
       const x = mapX(i, n);
       const y = mapY(v);
+      if (i % 100 === 0 || i === n - 1) dlog('dot', { i, v, x, y });
 
       const hasUpper = typeof upperLimit === 'number' && Number.isFinite(upperLimit);
       const hasLower = typeof lowerLimit === 'number' && Number.isFinite(lowerLimit);
@@ -211,8 +207,6 @@ export default function Chart({ labels, values, upperLimit, lowerLimit, showPoin
 
       const outHigh = hasUpper && v > (upperLimit as number);
       const outLow = hasLower && v < (lowerLimit as number);
-      const match = hasTarget && v == (lowerLimit as number);
-
 
       // класи зони: поза межами / між target і upper / між lower і target / нейтрал
       let fill = '#7dd3fc'; // дефолт (в межах і без target)
@@ -249,12 +243,14 @@ export default function Chart({ labels, values, upperLimit, lowerLimit, showPoin
       const lineH = 12;                             // висота рядка для 10px
       // if (ty + lineH > bottomLimit) ty = y - 6 - lineH;  // якщо не влазить знизу — малюємо над точкою
 
+      // Set font to ensure consistent rendering
+      ctx.font = '10px -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial';
+
       // легкий "halo" для читабельності: спочатку strokeText темним, потім fillText світлим
       ctx.lineWidth = 3;
       ctx.strokeStyle = 'rgba(0,0,0,0.6)';
       ctx.strokeText(text, x, ty);
 
-      // ctx.fillStyle = '#e6eef7';
       ctx.fillText(text, x, ty);
     }
 
@@ -262,15 +258,16 @@ export default function Chart({ labels, values, upperLimit, lowerLimit, showPoin
     // --- X-підписи (рідше) ---
     ctx.fillStyle = '#98a6b3'
     ctx.font = '10px -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial'
-    const step = Math.max(1, Math.ceil(labels10.length / 6));
-    for (let i = 0; i < labels10.length; i += step) {
-      const x = mapX(i, labels10.length);
-      ctx.fillText(labels10[i] ?? '', x - 20, h - 6);
+    const step = Math.max(1, Math.ceil(data.length / 6));
+    dlog('x labels', { step, total: data.length });
+    for (let i = 0; i < data.length; i += step) {
+      const x = mapX(i, data.length);
+      ctx.fillText(data[i]?.t ?? '', x - 20, h - 6);
     }
     // останній підпис
-    if (labels.length > 1) {
-      const xLast = mapX(labels.length - 1, labels.length)
-      ctx.fillText(labels[labels.length - 1] ?? '', xLast - 20, h - 6)
+    if (data.length > 1) {
+      const xLast = mapX(data.length - 1, data.length);
+      ctx.fillText(data[data.length - 1]?.t ?? '', xLast - 20, h - 6);
     }
 
     // --- підписи часу біля точок (опційно) ---
@@ -283,11 +280,11 @@ export default function Chart({ labels, values, upperLimit, lowerLimit, showPoin
       const stepLbl = Math.max(1, Math.ceil(n / maxLabels));
 
       for (let i = 0; i < n; i += stepLbl) {
-        const v = nums[i];
+        const v = data[i].v;
         const x = mapX(i, n);
         const y = mapY(v);
 
-        let text = String(labels[i] ?? '');
+        let text = String(data[i]?.t ?? '');
         const parsed = Date.parse(text);
         if (!Number.isNaN(parsed)) {
           const d = new Date(parsed);
@@ -335,10 +332,9 @@ export default function Chart({ labels, values, upperLimit, lowerLimit, showPoin
         ctx.fillText(text, tx + padX, ty - padY);
       }
     }
+    dlog('render end');
 
-
-
-  }, [labels, values, upperLimit, lowerLimit])
+  }, [labels, values, upperLimit, lowerLimit, target, showPointTimes])
 
   // ширину краще віддати на розсуд контейнера
   return (
