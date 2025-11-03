@@ -6,11 +6,53 @@ import './styles.css'
 const DEBUG = true;
 const dlog = (...args: any[]) => { if (DEBUG) console.log('[APP]', ...args); };
 
+// --- Presets -----------------------------
+export type Preset = { id: string; name: string; target: number; tolerancePct: number; groupPath?: string };
+const PRESET_LS_KEY = 'srdev5_presets_v1';
+function loadPresetsLS(): Preset[] {
+  try {
+    const raw = localStorage.getItem(PRESET_LS_KEY);
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch { return []; }
+}
+function savePresetsLS(list: Preset[]) {
+  try { localStorage.setItem(PRESET_LS_KEY, JSON.stringify(list)); } catch { }
+}
+function uuid() { return Math.random().toString(36).slice(2) + Date.now().toString(36); }
+function normGroupPath(gp?: string) {
+  const s = (gp || '').trim().replace(/\\+/g, '/').replace(/\s*\/\s*/g, '/');
+  return s.replace(/^\/+|\/+$/g, '');
+}
+function topGroup(gp?: string) {
+  const n = normGroupPath(gp);
+  return n ? n.split('/')[0] : '未分類';
+}
+function allGroups(list: Preset[]) {
+  const set = new Set<string>();
+  for (const p of list) {
+    const n = normGroupPath(p.groupPath);
+    if (!n) { set.add('未分類'); continue; }
+    const parts = n.split('/');
+    for (let i = 0; i < parts.length; i++) set.add(parts.slice(0, i + 1).join('/'));
+  }
+  return Array.from(set).sort();
+}
+function displayPresetLabel(p: Preset) {
+  const gp = normGroupPath(p.groupPath);
+  return gp ? `${p.name} — [${gp}]` : p.name;
+}
+const DEFAULT_PRESETS: Preset[] = [
+  { id: 'd1', name: '50g ±3%', target: 50, tolerancePct: 3, groupPath: 'デフォルト' },
+  { id: 'd2', name: '100g ±2%', target: 100, tolerancePct: 2, groupPath: 'デフォルト' },
+];
+
 // Backend returns timestamps like "YYYY-MM-DD HH:mm:ss" in UTC. Parse as UTC.
 function parseUtcMs(ts: string): number {
   if (!ts) return NaN;
   // Normalize: "2025-10-24 04:47:02" -> "2025-10-24T04:47:02Z"
-  const iso = ts.includes('T') ? ts.replace(' ', 'T').replace(/$/,'Z') : ts.replace(' ', 'T') + 'Z';
+  const iso = ts.includes('T') ? ts.replace(' ', 'T').replace(/$/, 'Z') : ts.replace(' ', 'T') + 'Z';
   const ms = Date.parse(iso);
   return ms;
 }
@@ -30,7 +72,7 @@ function bucketize(meas: { ts: string; weight: number }[], stepMin: number, wind
     prev.cnt += 1;
     map.set(bucket, prev);
   }
-  const buckets = Array.from(map.values()).sort((a,b) => a.ts - b.ts);
+  const buckets = Array.from(map.values()).sort((a, b) => a.ts - b.ts);
   return buckets.map(b => ({ t: new Date(b.ts).toISOString(), v: b.cnt ? b.sum / b.cnt : 0 }));
 }
 
@@ -75,6 +117,23 @@ export default function App() {
   const [labels, setLabels] = useState<string[]>([])
   const [values, setValues] = useState<number[]>([])
 
+  const [presets, setPresets] = useState<Preset[]>([]);
+  const [selectedPreset, setSelectedPreset] = useState<string>('');
+  const [showPresetModal, setShowPresetModal] = useState(false);
+  const [presetForm, setPresetForm] = useState<{ id?: string; name: string; target: string; tol: string; groupPath: string }>({
+    name: '',
+    target: String(gramm),
+    tol: String(deviation),
+    groupPath: '',
+  });
+
+  useEffect(() => {
+    const fromLS = loadPresetsLS();
+    const list = fromLS.length ? fromLS : DEFAULT_PRESETS;
+    setPresets(list);
+    if (list[0]) setSelectedPreset(list[0].id);
+  }, []);
+
   const windowMin = useMemo(() => proc === 'packaging' ? 20 : 60, [proc])
 
   function buildExportQS() {
@@ -101,6 +160,106 @@ export default function App() {
     }
     dlog('buildExportQS result', Object.fromEntries(qs.entries()));
     return qs.toString()
+  }
+
+  function applyPreset(id: string) {
+    const p = presets.find(x => x.id === id); if (!p) return;
+    dlog('applyPreset', p);
+    setSelectedPreset(id);
+    setGramm(p.target);
+    setDeviation(p.tolerancePct);
+  }
+
+  function saveCurrentAsPreset() {
+    const name = window.prompt('プリセット名を入力', `${gramm}g ±${deviation}%`);
+    if (!name) return;
+    const base = presets.find(x => x.id === selectedPreset);
+    const p: Preset = { id: uuid(), name, target: gramm, tolerancePct: deviation, groupPath: normGroupPath(base?.groupPath) };
+    const next = [...presets, p];
+    setPresets(next);
+    savePresetsLS(next);
+    setSelectedPreset(p.id);
+    dlog('preset saved', p);
+  }
+
+  function updateSelectedPresetValues() {
+    const id = selectedPreset; if (!id) return;
+    const idx = presets.findIndex(p => p.id === id); if (idx < 0) return;
+    const copy = [...presets];
+    copy[idx] = { ...copy[idx], target: gramm, tolerancePct: deviation };
+    setPresets(copy);
+    savePresetsLS(copy);
+    dlog('preset updated', copy[idx]);
+  }
+
+  function renameSelectedPreset() {
+    const id = selectedPreset; if (!id) return;
+    const idx = presets.findIndex(p => p.id === id); if (idx < 0) return;
+    const nextName = window.prompt('プリセット名の変更', presets[idx].name);
+    if (!nextName) return;
+    const copy = [...presets];
+    copy[idx] = { ...copy[idx], name: nextName };
+    setPresets(copy);
+    savePresetsLS(copy);
+    dlog('preset renamed', copy[idx]);
+  }
+
+  function deleteSelectedPreset() {
+    const id = selectedPreset; if (!id) return;
+    const p = presets.find(x => x.id === id);
+    if (!p) return;
+    if (!window.confirm(`プリセット「${p.name}」を削除しますか？`)) return;
+    const next = presets.filter(x => x.id !== id);
+    setPresets(next);
+    savePresetsLS(next);
+    setSelectedPreset(next[0]?.id || '');
+    dlog('preset deleted', p);
+  }
+
+  function openCreatePresetModal() {
+    const sel = presets.find(x => x.id === selectedPreset);
+    setPresetForm({
+      name: '',
+      target: String(gramm),
+      tol: String(deviation),
+      groupPath: normGroupPath(sel?.groupPath || ''),
+    });
+    setShowPresetModal(true);
+  }
+  function openEditPresetModal() {
+    const p = presets.find(x => x.id === selectedPreset);
+    if (!p) return;
+    setPresetForm({
+      id: p.id,
+      name: p.name,
+      target: String(p.target),
+      tol: String(p.tolerancePct),
+      groupPath: normGroupPath(p.groupPath),
+    });
+    setShowPresetModal(true);
+  }
+  function closePresetModal() { setShowPresetModal(false); }
+  function savePresetFromModal() {
+    const name = presetForm.name.trim() || `${presetForm.target}g ±${presetForm.tol}%`;
+    const target = Number(presetForm.target);
+    const tol = Number(presetForm.tol);
+    if (!Number.isFinite(target) || !Number.isFinite(tol) || target <= 0) { alert('Invalid values'); return; }
+
+    if (presetForm.id) {
+      // update existing
+      const idx = presets.findIndex(p => p.id === presetForm.id);
+      if (idx >= 0) {
+        const copy = [...presets];
+        copy[idx] = { ...copy[idx], name, target, tolerancePct: tol, groupPath: normGroupPath(presetForm.groupPath) }; setPresets(copy); savePresetsLS(copy); setSelectedPreset(copy[idx].id);
+        setGramm(target); setDeviation(tol);
+      }
+    } else {
+      // create new
+      const p: Preset = { id: uuid(), name, target, tolerancePct: tol, groupPath: normGroupPath(presetForm.groupPath) }; const next = [...presets, p];
+      setPresets(next); savePresetsLS(next); setSelectedPreset(p.id);
+      setGramm(target); setDeviation(tol);
+    }
+    setShowPresetModal(false);
   }
 
   async function load() {
@@ -132,8 +291,8 @@ export default function App() {
             if (!okW) dlog('raw drop by weight', { weight: r.weight, ts: r.ts });
             return okW && okT;
           })
-          .sort((a,b) => new Date(a.ts).getTime() - new Date(b.ts).getTime());
-        dlog('raw branch: recClean count', recClean.length, 'first', recClean[0]?.ts, 'last', recClean[recClean.length-1]?.ts);
+          .sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime());
+        dlog('raw branch: recClean count', recClean.length, 'first', recClean[0]?.ts, 'last', recClean[recClean.length - 1]?.ts);
         if (recClean.length > 0) {
           const minMs = Math.min(...recClean.map(r => parseUtcMs(r.ts as any)));
           const maxMs = Math.max(...recClean.map(r => parseUtcMs(r.ts as any)));
@@ -155,7 +314,7 @@ export default function App() {
         const items = res.data ?? [];
         dlog('1min branch: items length', items.length);
         const clean = items.filter((b: any) => Number.isFinite(b.avg_weight) && b.avg_weight !== 0);
-        dlog('1min branch: clean length', clean.length, 'first', clean[0]?.bucket_start_utc, 'last', clean[clean.length-1]?.bucket_start_utc);
+        dlog('1min branch: clean length', clean.length, 'first', clean[0]?.bucket_start_utc, 'last', clean[clean.length - 1]?.bucket_start_utc);
         let newLabels: string[];
         let newValues: number[];
         if (clean.length === 0) {
@@ -183,7 +342,7 @@ export default function App() {
         const items = res.data ?? [];
         dlog('5min branch: items length', items.length);
         const clean = items.filter((b: any) => Number.isFinite(b.avg_weight) && b.avg_weight !== 0);
-        dlog('5min branch: clean length', clean.length, 'first', clean[0]?.bucket_start_utc, 'last', clean[clean.length-1]?.bucket_start_utc);
+        dlog('5min branch: clean length', clean.length, 'first', clean[0]?.bucket_start_utc, 'last', clean[clean.length - 1]?.bucket_start_utc);
         let newLabels: string[];
         let newValues: number[];
         if (clean.length === 0) {
@@ -211,7 +370,7 @@ export default function App() {
         const items = res.data ?? [];
         dlog('default branch: items length', items.length);
         const clean = items.filter((b: any) => Number.isFinite(b.avg_weight) && b.avg_weight !== 0);
-        dlog('default branch: clean length', clean.length, 'first', clean[0]?.bucket_start_utc, 'last', clean[clean.length-1]?.bucket_start_utc);
+        dlog('default branch: clean length', clean.length, 'first', clean[0]?.bucket_start_utc, 'last', clean[clean.length - 1]?.bucket_start_utc);
         const newLabels = clean.map((b: any) => formatJPLabel(b.bucket_start_utc));
         const newValues = clean.map((b: any) => b.avg_weight);
         dlog('default branch: newValues length', newValues.length);
@@ -278,7 +437,10 @@ export default function App() {
     ? ((latestWeight - targetWeight) / targetWeight) * 100
     : null;
 
+
+
   return (
+
     <div className="wrap">
       <header>
         <h1>製品重量モニタ（g・小数点第1位）</h1>
@@ -313,7 +475,7 @@ export default function App() {
           <span className="ctl-label">目標重量</span>
           <Select
             value={String(gramm)}
-            onChange={(v: string) => setGramm(Number(v) as Gramm)}
+            onChange={(v: string) => { setGramm(Number(v) as Gramm); setSelectedPreset(''); }}
             options={[
               { value: "10", label: "10g" },
               { value: "20", label: "20g" },
@@ -333,7 +495,7 @@ export default function App() {
           <span className="ctl-label">重量許容範囲(%)</span>
           <Select
             value={String(deviation)}
-            onChange={(v: string) => setDeviation(Number(v) as Deviation)}
+            onChange={(v: string) => { setDeviation(Number(v) as Deviation); setSelectedPreset(''); }}
             options={calculateMenuItem(100)} />
         </div>
         <div className="control">
@@ -342,6 +504,37 @@ export default function App() {
             { value: 'ja', label: LANG_LABEL.ja },
             { value: 'en', label: LANG_LABEL.en },
           ]} />
+        </div>
+        <div className="control">
+          <span className="ctl-label">プリセット</span>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <div className="select">
+              <select value={selectedPreset} onChange={e => applyPreset(e.target.value)}>
+                {(() => {
+                  const byTop: Record<string, Preset[]> = {};
+                  for (const p of presets) {
+                    const tg = topGroup(p.groupPath);
+                    (byTop[tg] ||= []).push(p);
+                  }
+                  const tops = Object.keys(byTop).sort();
+                  return tops.map(tg => (
+                    <optgroup key={tg} label={tg}>
+                      {byTop[tg]
+                        .sort((a, b) => displayPresetLabel(a).localeCompare(displayPresetLabel(b)))
+                        .map(p => (
+                          <option key={p.id} value={p.id}>{displayPresetLabel(p)}</option>
+                        ))}
+                    </optgroup>
+                  ));
+                })()}
+              </select>
+            </div>
+            <button className="btn" onClick={openCreatePresetModal}>＋ 新規</button>
+            <button className="btn" onClick={openEditPresetModal} disabled={!selectedPreset}>編集</button>
+            <button className="btn" onClick={saveCurrentAsPreset}>そのまま保存</button>
+            <button className="btn" onClick={updateSelectedPresetValues} disabled={!selectedPreset}>上書き保存</button>
+            <button className="btn" onClick={deleteSelectedPreset} disabled={!selectedPreset}>削除</button>
+          </div>
         </div>
         <div className="control">
           <a className="btn" href={csvUrl} target="_blank" rel="noreferrer">CSVダウンロード</a>
@@ -386,6 +579,80 @@ export default function App() {
           </div>
         </div>
       </section>
+
+      {
+        showPresetModal && (
+          <div className="modal-backdrop" onClick={closePresetModal}>
+            <div className="modal" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true">
+              <div className="modal-head">
+                <h3 style={{ margin: 0 }}>{presetForm.id ? 'プリセットを編集' : 'プリセットを作成'}</h3>
+              </div>
+              <div className="modal-body">
+                <div className="field">
+                  <label>グループパス <small style={{ opacity: .7 }}>（「/」で階層化、例： 魚/鮪/いくら）</small></label>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <div className="select" style={{ flex: 1 }}>
+                      <select
+                        value={presetForm.groupPath}
+                        onChange={e => setPresetForm({ ...presetForm, groupPath: e.target.value })}
+                      >
+                        <option value="">（新規／未分類）</option>
+                        {allGroups(presets).map(g => (
+                          <option key={g} value={g}>{g}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <input
+                      style={{ flex: 1 }}
+                      type="text"
+                      value={presetForm.groupPath}
+                      onChange={e => setPresetForm({ ...presetForm, groupPath: e.target.value })}
+                      placeholder="例: 魚/鮪/いくら"
+                    />
+                  </div>
+                  <div className="hint">左で既存グループを選択、右で新しい階層を入力できます。</div>
+                </div>
+                <div className="field">
+                  <label>商品名</label>
+                  <input
+                    type="text"
+                    value={presetForm.name}
+                    onChange={e => setPresetForm({ ...presetForm, name: e.target.value })}
+                    placeholder="e.g., 47g ±2%"
+                  />
+                </div>
+                <div className="row">
+                  <div className="field">
+                    <label>目標重量 (g)</label>
+                    <input
+                      type="number"
+                      inputMode="decimal"
+                      value={presetForm.target}
+                      onChange={e => setPresetForm({ ...presetForm, target: e.target.value })}
+                    />
+                  </div>
+                  <div className="field">
+                    <label>許容差 (%)</label>
+                    <input
+                      type="number"
+                      inputMode="numeric"
+                      value={presetForm.tol}
+                      onChange={e => setPresetForm({ ...presetForm, tol: e.target.value })}
+                    />
+                  </div>
+                </div>
+                <div className="hint">保存すると、グラフにただちに反映されます。</div>
+              </div>
+              <div className="modal-foot">
+                <button className="btn" onClick={savePresetFromModal}>
+                  {presetForm.id ? '変更を保存' : '作成'}
+                </button>
+                <button className="btn ghost" onClick={closePresetModal}>キャンセル</button>
+              </div>
+            </div>
+          </div>
+        )
+      }
 
       <section className="card">
         <h2>{PROC_LABEL[proc]} — {GRAN_LABEL[gran]}</h2>
