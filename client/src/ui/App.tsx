@@ -106,7 +106,7 @@ const LANG_LABEL: Record<Lang, string> = { en: 'EN', ja: '日本語' }
 
 export default function App() {
   const [proc, setProc] = useState<Proc>('molding')
-  const [gran, setGran] = useState<Gran>('default')
+  const [gran, setGran] = useState<Gran>('raw')
   const [gramm, setGramm] = useState<Gramm>(60)
   const [deviation, setDeviation] = useState<Deviation>(3)
 
@@ -125,6 +125,21 @@ export default function App() {
     target: String(gramm),
     tol: String(deviation),
     groupPath: '',
+  });
+  const [showPdfModal, setShowPdfModal] = useState(false);
+  const [pdfForm, setPdfForm] = useState<{ mode: 'count' | 'time'; chartLimit: string; timeValue: string; timeUnit: 'min' | 'hour' | 'day'; includeRaw: boolean }>({
+    mode: 'count',
+    chartLimit: '100',
+    timeValue: '3',
+    timeUnit: 'min',
+    includeRaw: true,
+  });
+  const [showCsvModal, setShowCsvModal] = useState(false);
+  const [csvForm, setCsvForm] = useState<{ mode: 'count' | 'time'; chartLimit: string; timeValue: string; timeUnit: 'min' | 'hour' | 'day' }>({
+    mode: 'count',
+    chartLimit: '100',
+    timeValue: '3',
+    timeUnit: 'min',
   });
 
   useEffect(() => {
@@ -409,10 +424,98 @@ export default function App() {
   }, [proc, gran, intervalMs]);
 
   const qs = buildExportQS()
-  const csvUrl = `http://localhost:3001/api/export/csv?${qs}`
+  const csvBase = `http://localhost:3001/api/export/csv`
   const pdfUrl = `http://localhost:3001/api/export/pdf?${qs}`
-  const svgUrl = `http://localhost:3001/api/export/svg?${qs}`
-  dlog('export URLs', { csvUrl, pdfUrl, svgUrl });
+  dlog('export URLs', { csvBase, pdfUrl });
+  // --- CSV click handler (opens styled modal similar to PDF) ---
+  function handleCsvClick(e: React.MouseEvent<HTMLAnchorElement>) {
+    e.preventDefault();
+    const lastMode = (localStorage.getItem('srdev5_csv_mode') as 'count' | 'time') || 'count';
+    const lastCount = localStorage.getItem('srdev5_csv_chart_limit') || '100';
+    const lastTimeValue = localStorage.getItem('srdev5_csv_time_value') || '3';
+    const lastTimeUnit = (localStorage.getItem('srdev5_csv_time_unit') as 'min' | 'hour' | 'day') || 'min';
+    setCsvForm({
+      mode: lastMode === 'time' ? 'time' : 'count',
+      chartLimit: lastCount,
+      timeValue: lastTimeValue,
+      timeUnit: (lastTimeUnit === 'hour' || lastTimeUnit === 'day') ? lastTimeUnit : 'min',
+    });
+    setShowCsvModal(true);
+  }
+
+  function closeCsvModal() { setShowCsvModal(false); }
+
+  function confirmCsvExport() {
+    const base = 'http://localhost:3001/api/export/csv';
+    let url: string;
+    if (csvForm.mode === 'time') {
+      const tv = parseInt(csvForm.timeValue, 10);
+      const factor = csvForm.timeUnit === 'day' ? 1440 : (csvForm.timeUnit === 'hour' ? 60 : 1);
+      const minutes = Number.isFinite(tv) && tv > 0 ? tv * factor : 3;
+      localStorage.setItem('srdev5_csv_mode', 'time');
+      localStorage.setItem('srdev5_csv_time_value', String(tv));
+      localStorage.setItem('srdev5_csv_time_unit', csvForm.timeUnit);
+      url = `${base}?process=${proc}&rangeMode=time&rangeMinutes=${minutes}`;
+    } else {
+      const n = parseInt(csvForm.chartLimit, 10);
+      const clamped = Number.isFinite(n) ? Math.max(1, Math.min(n, 5000)) : 100;
+      localStorage.setItem('srdev5_csv_mode', 'count');
+      localStorage.setItem('srdev5_csv_chart_limit', String(clamped));
+      url = `${base}?process=${proc}&rangeMode=count&chartLimit=${clamped}`;
+    }
+    window.open(url, '_blank', 'noopener');
+    setShowCsvModal(false);
+  }
+
+  // --- PDF click handler (opens styled modal) ---
+  function handlePdfClick(e: React.MouseEvent<HTMLAnchorElement>) {
+    e.preventDefault();
+    const lastMode = (localStorage.getItem('srdev5_pdf_mode') as 'count' | 'time') || 'count';
+    const lastCount = localStorage.getItem('srdev5_pdf_chart_limit') || '100';
+    const lastRaw = localStorage.getItem('srdev5_pdf_include_raw');
+    const includeRaw = lastRaw == null ? true : lastRaw === '1';
+    const lastTimeValue = localStorage.getItem('srdev5_pdf_time_value') || '3';
+    const lastTimeUnit = (localStorage.getItem('srdev5_pdf_time_unit') as 'min' | 'hour' | 'day') || 'min';
+    setPdfForm({
+      mode: lastMode === 'time' ? 'time' : 'count',
+      chartLimit: lastCount,
+      timeValue: lastTimeValue,
+      timeUnit: (lastTimeUnit === 'hour' || lastTimeUnit === 'day') ? lastTimeUnit : 'min',
+      includeRaw,
+    });
+    setShowPdfModal(true);
+  }
+
+  function closePdfModal() { setShowPdfModal(false); }
+
+  function confirmPdfExport() {
+    const n = parseInt(pdfForm.chartLimit, 10);
+    const clamped = Number.isFinite(n) ? Math.max(1, Math.min(n, 2000)) : 100;
+    // persist shared settings
+    localStorage.setItem('srdev5_pdf_chart_limit', String(clamped));
+    localStorage.setItem('srdev5_pdf_include_raw', pdfForm.includeRaw ? '1' : '0');
+
+    let url: string;
+    if (pdfForm.mode === 'time') {
+      const tv = parseInt(pdfForm.timeValue, 10);
+      const factor = pdfForm.timeUnit === 'day' ? 1440 : (pdfForm.timeUnit === 'hour' ? 60 : 1);
+      const minutes = Number.isFinite(tv) && tv > 0 ? tv * factor : 3;
+      localStorage.setItem('srdev5_pdf_mode', 'time');
+      localStorage.setItem('srdev5_pdf_time_value', String(tv));
+      localStorage.setItem('srdev5_pdf_time_unit', pdfForm.timeUnit);
+      url = `${pdfUrl}&rangeMode=time&rangeMinutes=${minutes}&target=${gramm}&tolPct=${deviation}`
+        + `&includeRaw=${pdfForm.includeRaw ? '1' : '0'}`
+        + `&rawLimit=${pdfForm.includeRaw ? '2000' : '0'}`; // safety cap for raw table
+    } else {
+      localStorage.setItem('srdev5_pdf_mode', 'count');
+      url = `${pdfUrl}&rangeMode=count&chartLimit=${clamped}&target=${gramm}&tolPct=${deviation}`
+        + `&includeRaw=${pdfForm.includeRaw ? '1' : '0'}`
+        + `&rawLimit=${pdfForm.includeRaw ? clamped : 0}`;
+    }
+
+    window.open(url, '_blank', 'noopener');
+    setShowPdfModal(false);
+  }
 
   function calculateMenuItem(amount: number, step: number = 1) {
     let res = []
@@ -537,9 +640,8 @@ export default function App() {
           </div>
         </div>
         <div className="control">
-          <a className="btn" href={csvUrl} target="_blank" rel="noreferrer">CSVダウンロード</a>
-          <a className="btn" href={pdfUrl} target="_blank" rel="noreferrer">PDFダウンロード</a>
-          <a className="btn" href={svgUrl} target="_blank" rel="noreferrer">SVGダウンロード</a>
+          <a className="btn" href={csvBase} onClick={handleCsvClick} target="_blank" rel="noreferrer">CSVダウンロード</a>
+          <a className="btn" href={pdfUrl} onClick={handlePdfClick} target="_blank" rel="noreferrer">PDFダウンロード</a>
         </div>
       </div>
 
@@ -653,6 +755,179 @@ export default function App() {
           </div>
         )
       }
+
+      {showPdfModal && (
+        <div className="modal-backdrop" onClick={closePdfModal}>
+          <div className="modal" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true">
+            <div className="modal-head">
+              <h3 style={{ margin: 0 }}>PDF出力オプション</h3>
+            </div>
+            <div className="modal-body">
+              <div className="field">
+                <label>データ範囲の指定</label>
+                <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                  <label><input type="radio" checked={pdfForm.mode === 'count'} onChange={() => setPdfForm(prev => ({ ...prev, mode: 'count' }))} style={{ marginRight: 6 }} />件数で指定</label>
+                  <label><input type="radio" checked={pdfForm.mode === 'time'} onChange={() => setPdfForm(prev => ({ ...prev, mode: 'time' }))} style={{ marginRight: 6 }} />時間で指定</label>
+                </div>
+              </div>
+
+              {pdfForm.mode === 'count' && (
+                <div className="field">
+                  <label>グラフに含める最新の点数</label>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <input
+                      type="number"
+                      inputMode="numeric"
+                      min={1}
+                      max={2000}
+                      value={pdfForm.chartLimit}
+                      onChange={e => setPdfForm(prev => ({ ...prev, chartLimit: e.target.value }))}
+                      placeholder="例: 100"
+                      style={{ flex: 1 }}
+                    />
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      <button className="btn" onClick={() => setPdfForm(prev => ({ ...prev, chartLimit: '50' }))}>50</button>
+                      <button className="btn" onClick={() => setPdfForm(prev => ({ ...prev, chartLimit: '100' }))}>100</button>
+                      <button className="btn" onClick={() => setPdfForm(prev => ({ ...prev, chartLimit: '200' }))}>200</button>
+                    </div>
+                  </div>
+                  <div className="hint">1〜2000 の範囲で指定できます。現在の目標重量（{gramm}g）はPDFに反映されます。</div>
+                </div>
+              )}
+
+              {pdfForm.mode === 'time' && (
+                <div className="field">
+                  <label>時間範囲</label>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <input
+                      type="number"
+                      inputMode="numeric"
+                      min={1}
+                      value={pdfForm.timeValue}
+                      onChange={e => setPdfForm(prev => ({ ...prev, timeValue: e.target.value }))}
+                      placeholder="例: 3"
+                      style={{ width: 100 }}
+                    />
+                    <div className="select">
+                      <select
+                        value={pdfForm.timeUnit}
+                        onChange={e => setPdfForm(prev => ({ ...prev, timeUnit: (e.target.value as 'min' | 'hour' | 'day') }))}
+                      >
+                        <option value="min">分</option>
+                        <option value="hour">時間</option>
+                        <option value="day">日</option>
+                      </select>
+                    </div>
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      <button className="btn" onClick={() => setPdfForm(prev => ({ ...prev, timeValue: '3', timeUnit: 'min' }))}>3分</button>
+                      <button className="btn" onClick={() => setPdfForm(prev => ({ ...prev, timeValue: '60', timeUnit: 'min' }))}>60分</button>
+                      <button className="btn" onClick={() => setPdfForm(prev => ({ ...prev, timeValue: '180', timeUnit: 'min' }))}>180分</button>
+                    </div>
+                  </div>
+                  <div className="hint">グラフ・ヒストグラム・（チェック時）生データ表は、この期間内のデータを使用します。</div>
+                </div>
+              )}
+
+              <div className="field" style={{ marginTop: 8 }}>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={pdfForm.includeRaw}
+                    onChange={e => setPdfForm(prev => ({ ...prev, includeRaw: e.target.checked }))}
+                    style={{ marginRight: 8 }}
+                  />
+                  生データ表を含める
+                </label>
+                <div className="hint">{pdfForm.mode === 'count' ? 'N は上の点数と同じ値が使われます。' : '選択した期間の生データを含めます。'}</div>
+              </div>
+            </div>
+            <div className="modal-foot">
+              <button className="btn" onClick={confirmPdfExport}>出力</button>
+              <button className="btn ghost" onClick={closePdfModal}>キャンセル</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showCsvModal && (
+        <div className="modal-backdrop" onClick={closeCsvModal}>
+          <div className="modal" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true">
+            <div className="modal-head">
+              <h3 style={{ margin: 0 }}>CSV出力オプション</h3>
+            </div>
+            <div className="modal-body">
+              <div className="field">
+                <label>データ範囲の指定</label>
+                <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                  <label><input type="radio" checked={csvForm.mode === 'count'} onChange={() => setCsvForm(prev => ({ ...prev, mode: 'count' }))} style={{ marginRight: 6 }} />件数で指定</label>
+                  <label><input type="radio" checked={csvForm.mode === 'time'} onChange={() => setCsvForm(prev => ({ ...prev, mode: 'time' }))} style={{ marginRight: 6 }} />時間で指定</label>
+                </div>
+              </div>
+
+              {csvForm.mode === 'count' && (
+                <div className="field">
+                  <label>CSVに含める最新の件数</label>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <input
+                      type="number"
+                      inputMode="numeric"
+                      min={1}
+                      max={5000}
+                      value={csvForm.chartLimit}
+                      onChange={e => setCsvForm(prev => ({ ...prev, chartLimit: e.target.value }))}
+                      placeholder="例: 100"
+                      style={{ flex: 1 }}
+                    />
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      <button className="btn" onClick={() => setCsvForm(prev => ({ ...prev, chartLimit: '50' }))}>50</button>
+                      <button className="btn" onClick={() => setCsvForm(prev => ({ ...prev, chartLimit: '100' }))}>100</button>
+                      <button className="btn" onClick={() => setCsvForm(prev => ({ ...prev, chartLimit: '500' }))}>500</button>
+                    </div>
+                  </div>
+                  <div className="hint">1〜5000 の範囲で指定できます。</div>
+                </div>
+              )}
+
+              {csvForm.mode === 'time' && (
+                <div className="field">
+                  <label>時間範囲</label>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <input
+                      type="number"
+                      inputMode="numeric"
+                      min={1}
+                      value={csvForm.timeValue}
+                      onChange={e => setCsvForm(prev => ({ ...prev, timeValue: e.target.value }))}
+                      placeholder="例: 3"
+                      style={{ width: 100 }}
+                    />
+                    <div className="select">
+                      <select
+                        value={csvForm.timeUnit}
+                        onChange={e => setCsvForm(prev => ({ ...prev, timeUnit: (e.target.value as 'min' | 'hour' | 'day') }))}
+                      >
+                        <option value="min">分</option>
+                        <option value="hour">時間</option>
+                        <option value="day">日</option>
+                      </select>
+                    </div>
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      <button className="btn" onClick={() => setCsvForm(prev => ({ ...prev, timeValue: '3', timeUnit: 'min' }))}>3分</button>
+                      <button className="btn" onClick={() => setCsvForm(prev => ({ ...prev, timeValue: '60', timeUnit: 'min' }))}>60分</button>
+                      <button className="btn" onClick={() => setCsvForm(prev => ({ ...prev, timeValue: '180', timeUnit: 'min' }))}>180分</button>
+                    </div>
+                  </div>
+                  <div className="hint">この期間のデータをCSVに出力します。</div>
+                </div>
+              )}
+            </div>
+            <div className="modal-foot">
+              <button className="btn" onClick={confirmCsvExport}>出力</button>
+              <button className="btn ghost" onClick={closeCsvModal}>キャンセル</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <section className="card">
         <h2>{PROC_LABEL[proc]} — {GRAN_LABEL[gran]}</h2>
