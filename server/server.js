@@ -57,13 +57,10 @@ function detectError(weight) {
 
 function parseFromRaw(raw) {
   if (typeof raw !== 'string') return {};
-  // витягуємо перше число (допускаємо +/-, десяткову крапку)
   const m = raw.match(/([+-]?\d+(?:\.\d+)?)/);
   const weight = m ? Number(parseFloat(m[1]).toFixed(1)) : null;
-  // літерні прапорці (наприклад "G S")
   const flags = (raw.match(/[A-Za-z]+/g) || []).join(' ');
-  const stable = flags.toUpperCase().includes('S');  // "S" = стабільно (як у тебе)
-  // одиницю спробуємо вгадати: G/GR/GRAM тощо => "g"
+  const stable = flags.toUpperCase().includes('S');  
   const unit = /\bG(RAM|R)?\b/i.test(raw) ? 'g' : 'g';
   return { weight, unit, status: flags, stable };
 }
@@ -118,8 +115,6 @@ app.post('/api/ingest', async (req, res) => {
   try {
     const { raw, weight, unit, status, source, process: processFromBody, stable } = req.body || {};
 
-
-    // якщо прийшов лише raw — парсимо
     let w = weight, u = unit, st = status, stbl = stable;
     if ((w == null || Number.isNaN(w)) && typeof raw === 'string') {
       const p = parseFromRaw(raw);
@@ -129,15 +124,12 @@ app.post('/api/ingest', async (req, res) => {
       if (stbl == null && typeof p.stable === 'boolean') stbl = p.stable ? 1 : 0;
     }
 
-    // дефолтний процес, якщо не передано
     const proc = (processFromBody ?? process.env.DEFAULT_PROCESS ?? 'molding');
 
-    // валідація: достатньо мати raw або weight
     if (raw == null && (w == null || Number.isNaN(w))) {
       return res.status(400).json({ error: 'Missing payload: raw or weight required' });
     }
 
-    // помилка для агрегацій, якщо ваги нема або за межами трешхолдів
     const is_error =
       (w == null || Number.isNaN(w)) ? 1 :
         (w < ERROR_MIN || w > ERROR_MAX) ? 1 : 0;
@@ -181,7 +173,6 @@ app.get('/api/measurements/latest', (req, res) => {
   try {
     const { where, params } = buildWhere({
       ...req.query,
-      // гарантуємо skipZero за замовчуванням
       skipZero: req.query.skipZero ?? '1'
     });
 
@@ -205,8 +196,7 @@ app.get('/api/measurements/latest', (req, res) => {
 // GET /api/aggregates
 app.get('/api/aggregates', (req, res) => {
   const { where, params } = buildWhere(req.query);
-  const binSec = parseInt(req.query.binSec || '300', 10); // напр., 300 = 5 хв
-  // Важливо: ts у нас у мс → ділимо на 1000
+  const binSec = parseInt(req.query.binSec || '300', 10);
   const sql = `
     WITH base AS (
       SELECT ts, weight
@@ -752,7 +742,7 @@ app.get('/api/export/pdf', async (req, res) => {
 });
 
 
-app.listen(PORT, () => console.log(`API listening on http://localhost:${PORT}`));
+app.listen(PORT, () => console.log(`API listening on ${process.env.BACKEND_URL || `http://localhost:${process.env.PORT || 3001}`}`));
 
 function toMs(v) {
   if (v == null) return undefined;
@@ -777,7 +767,27 @@ function buildWhere(q = {}) {
 }
 
 db.serialize(() => {
-  db.run('PRAGMA journal_mode=WAL;');      // читаємо під час запису
+  db.run('PRAGMA journal_mode=WAL;');    
   db.run('PRAGMA synchronous=NORMAL;');
-  db.run('PRAGMA busy_timeout=5000;');     // почекай до 5с, а не зависай навічно
+  db.run('PRAGMA busy_timeout=5000;');   
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS measurements (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts TEXT DEFAULT (datetime('now')),
+      raw TEXT,
+      weight REAL,
+      unit TEXT,
+      status TEXT,
+      source TEXT,
+      process TEXT,
+      stable INTEGER,
+      is_error INTEGER
+    )
+  `);
+
+  db.run(`
+    CREATE INDEX IF NOT EXISTS idx_measurements_process_ts
+    ON measurements(process, ts)
+  `);
 });

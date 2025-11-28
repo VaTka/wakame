@@ -2,7 +2,8 @@
 import 'dotenv/config';
 import axios from 'axios';
 
-const API = `http://localhost:${process.env.PORT || 3001}/api/ingest`;
+const BACKEND_URL = process.env.BACKEND_URL || `http://localhost:${process.env.PORT || 3001}`;
+const API = `${BACKEND_URL}/api/ingest`;
 const TICK_MS = parseInt(process.env.GEN_TICK_MS || '500', 10);
 const AMP = parseFloat(process.env.GEN_AMP || '500');
 const NOISE = parseFloat(process.env.GEN_NOISE || '1');
@@ -15,11 +16,13 @@ function nextValue() {
   t++;
   return parseFloat((base + noise).toFixed(1));
 }
+
 function nextProcess(prev) {
   if (MODE === 'molding') return 'molding';
   if (MODE === 'packaging') return 'packaging';
   return prev === 'molding' ? 'packaging' : 'molding';
 }
+
 let lastProc = 'packaging';
 async function tick() {
   const weight = nextValue();

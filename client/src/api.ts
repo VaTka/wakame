@@ -20,7 +20,7 @@ export type Aggregate = {
   count: number;
 };
 
-const API_BASE = (import.meta.env.VITE_API_BASE || 'http://localhost:3001').replace(/\/+$/, '');
+export const API_BASE = (import.meta.env.VITE_API_BASE || 'http://localhost:3001').replace(/\/+$/, '');
 const JSON_HDRS = { Accept: 'application/json' };
 
 
@@ -32,7 +32,6 @@ function qs(obj: Record<string, any> = {}) {
 
 export async function getJSON(path: string, params?: Record<string, any>) {
   const url = `${API_BASE}${path}${params ? `?${qs(params)}` : ''}`;
-  // console.log(url)
   const res = await fetch(url, { headers: JSON_HDRS });
   const text = await res.text();
   const ct = res.headers.get('content-type') || '';
@@ -49,7 +48,6 @@ function pickArray(res: AnyJson) {
 }
 
 function pickItem(res: AnyJson) {
-  // Підтримує {item}, {items:[0]}, {data:[0]}, або вже готовий об’єкт
   return res?.item ?? pickArray(res)[0] ?? (res && typeof res === 'object' && 'weight' in res ? res : null);
 }
 
@@ -58,15 +56,14 @@ export const fetchLatest = async (process: string) => {
   const item = pickItem(res);
   if (!item) return null;
   const w = Number(item.weight);
-  // фільтр нулів/некоректних
   if (!Number.isFinite(w) || w === 0) return null;
   return { ...item, weight: w };
 };
 
 export async function fetchRecent(process: string, limit: number): Promise<Measurement[]> {
   const res = await getJSON('/api/measurements', { process, limit, skipZero: 1 });
-  const items = res?.items ?? res?.data ?? res;      // підхоплюємо будь-яку схему
-  return Array.isArray(items) ? items : [];          // гарантуємо масив назовні
+  const items = res?.items ?? res?.data ?? res;   
+  return Array.isArray(items) ? items : [];     
 }
 
 export const fetchMeasurements = async (opts: any) =>

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react'
-import { fetchAggregates, fetchLatest, fetchRecent, type Measurement, formatJP, fmt1, fetchMeasurements } from '../api'
+import { fetchAggregates, fetchLatest, fetchRecent, type Measurement, formatJP, fmt1, fetchMeasurements, API_BASE } from '../api'
 import Chart from './Chart'
 import './styles.css'
 
@@ -155,21 +155,21 @@ export default function App() {
     dlog('buildExportQS start', { proc, gran, lang });
     const qs = new URLSearchParams({ process: proc, lang })
     if (gran === 'raw') {
-      // 粒度1: показувати останні 3 хв, сирі точки
+      // 粒度1: last 3min, row
       qs.set('windowMin', '3')
       qs.set('stepMin', '1')
       qs.set('includeRaw', '1')
       qs.set('rawLimit', '500')
     } else if (gran === '1min') {
-      // 粒度2: остання 1 година, бін 1 хв
+      // 粒度2: last 1h
       qs.set('windowMin', '60')
       qs.set('stepMin', '1')
     } else if (gran === '5min') {
-      // 粒度3: останні 3 години, бін 5 хв
+      // 粒度3: last 3h
       qs.set('windowMin', '180')
       qs.set('stepMin', '5')
     } else {
-      // 既定（要件）: останні 24 години, бін 30 хв
+      // 既定（要件）: last 24h
       qs.set('windowMin', '1440')
       qs.set('stepMin', '30')
     }
@@ -292,7 +292,7 @@ export default function App() {
       dlog('latest', lat, 'gran', gran)
 
       if (gran === 'raw') {
-        // 粒度1: останні 3 хв (сирі виміри)
+        // 粒度1: last 3m raw
         const rec = await fetchRecent(proc, 500);
         dlog('raw branch: rec count', rec?.length);
         const now = Date.now();
@@ -324,7 +324,7 @@ export default function App() {
           dlog('raw branch: skip state update (empty slice)');
         }
       } else if (gran === '1min') {
-        // 粒度2: показувати останню 1 годину, оновлення щохвилини
+        // 粒度2: last 1h
         const res = await fetchMeasurements({ process: proc, windowMin: 60, stepMin: 1 });
         const items = res.data ?? [];
         dlog('1min branch: items length', items.length);
@@ -352,7 +352,7 @@ export default function App() {
           dlog('1min branch: skip state update (empty slice)');
         }
       } else if (gran === '5min') {
-        // 粒度3: показувати останні 3 години, оновлення кожні 5 хв
+        // 粒度3: last 3h
         const res = await fetchMeasurements({ process: proc, windowMin: 180, stepMin: 5 });
         const items = res.data ?? [];
         dlog('5min branch: items length', items.length);
@@ -380,7 +380,7 @@ export default function App() {
           dlog('5min branch: skip state update (empty slice)');
         }
       } else {
-        // 既定（要件）: показувати останні 24 години, оновлення кожні 30 хв
+        // 既定（要件）: last 24h
         const res = await fetchMeasurements({ process: proc, windowMin: 1440, stepMin: 30 });
         const items = res.data ?? [];
         dlog('default branch: items length', items.length);
@@ -424,8 +424,8 @@ export default function App() {
   }, [proc, gran, intervalMs]);
 
   const qs = buildExportQS()
-  const csvBase = `http://localhost:3001/api/export/csv`
-  const pdfUrl = `http://localhost:3001/api/export/pdf?${qs}`
+  const csvBase = `${API_BASE}/api/export/csv`
+  const pdfUrl = `${API_BASE}/api/export/pdf?${qs}`
   dlog('export URLs', { csvBase, pdfUrl });
   // --- CSV click handler (opens styled modal similar to PDF) ---
   function handleCsvClick(e: React.MouseEvent<HTMLAnchorElement>) {
@@ -446,7 +446,7 @@ export default function App() {
   function closeCsvModal() { setShowCsvModal(false); }
 
   function confirmCsvExport() {
-    const base = 'http://localhost:3001/api/export/csv';
+    const base = `${API_BASE}/api/export/csv`;
     let url: string;
     if (csvForm.mode === 'time') {
       const tv = parseInt(csvForm.timeValue, 10);

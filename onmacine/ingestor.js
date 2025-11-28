@@ -6,7 +6,7 @@ import { ReadlineParser } from 'serialport';
 
 const SERIAL_PORT = process.env.SERIAL_PORT || '/dev/tty.BT62-BB62';
 const BAUD_RATE = parseInt(process.env.BAUD_RATE || '9600', 10);
-const BACKEND_URL = `http://localhost:${process.env.PORT || 3001}`;
+const BACKEND_URL = process.env.BACKEND_URL || `http://localhost:${process.env.PORT || 3001}`;
 
 const port = new SerialPort({ path: SERIAL_PORT, baudRate: BAUD_RATE, dataBits: 8, parity: 'none', stopBits: 1 });
 const parser = port.pipe(new ReadlineParser({ delimiter: '\n' }));
