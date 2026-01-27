@@ -110,6 +110,67 @@ function t(lang, hasJP, key) {
   return L[key];
 }
 
+import crypto from "node:crypto";
+
+const BASIC_USER = process.env.BASIC_AUTH_USER || "";
+const BASIC_PASS = process.env.BASIC_AUTH_PASS || "";
+
+function timingSafeEqualStr(a, b) {
+  const aa = Buffer.from(String(a));
+  const bb = Buffer.from(String(b));
+  if (aa.length !== bb.length) return false;
+  return crypto.timingSafeEqual(aa, bb);
+}
+
+function requireBasicAuth(options = {}) {
+  const {
+    realm = "Wakame",
+    allowPaths = ["/api/health"],     // endpoints that don't need auth
+  } = options;
+
+  return (req, res, next) => {
+    if (allowPaths.includes(req.path)) return next();
+
+    if (!BASIC_USER || !BASIC_PASS) {
+      return res.status(500).json({ error: "Basic auth not configured" });
+    }
+
+    const header = req.headers.authorization || "";
+    if (!header.startsWith("Basic ")) {
+      res.setHeader("WWW-Authenticate", `Basic realm="${realm}", charset="UTF-8"`);
+      return res.status(401).send("Authentication required");
+    }
+
+    let decoded = "";
+    try {
+      decoded = Buffer.from(header.slice(6), "base64").toString("utf8");
+    } catch {
+      res.setHeader("WWW-Authenticate", `Basic realm="${realm}", charset="UTF-8"`);
+      return res.status(401).send("Bad auth header");
+    }
+
+    const idx = decoded.indexOf(":");
+    const user = idx >= 0 ? decoded.slice(0, idx) : "";
+    const pass = idx >= 0 ? decoded.slice(idx + 1) : "";
+
+    const okUser = timingSafeEqualStr(user, BASIC_USER);
+    const okPass = timingSafeEqualStr(pass, BASIC_PASS);
+
+    if (!okUser || !okPass) {
+      res.setHeader("WWW-Authenticate", `Basic realm="${realm}", charset="UTF-8"`);
+      return res.status(401).send("Unauthorized");
+    }
+
+    next();
+  };
+}
+
+// Protect everything under /api (except allowPaths)
+app.use(requireBasicAuth({
+  realm: "Weights Monitor",
+  allowPaths: ["/api/health"], // add more if needed
+}));
+
 // POST /api/ingest
 app.post('/api/ingest', async (req, res) => {
   try {
