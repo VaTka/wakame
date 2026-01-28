@@ -1,6 +1,20 @@
 
+
 import 'dotenv/config';
 import axios from 'axios';
+
+// Optional HTTP Basic Auth for protected backend endpoints
+// Set in env: BASIC_AUTH_USER / BASIC_AUTH_PASS
+const BASIC_AUTH_USER = process.env.BASIC_AUTH_USER || '';
+const BASIC_AUTH_PASS = process.env.BASIC_AUTH_PASS || '';
+
+function axiosAuthConfig() {
+  // axios supports Basic Auth via `auth` option
+  if (BASIC_AUTH_USER && BASIC_AUTH_PASS) {
+    return { auth: { username: BASIC_AUTH_USER, password: BASIC_AUTH_PASS } };
+  }
+  return {};
+}
 
 const BACKEND_URL = process.env.BACKEND_URL || `http://localhost:${process.env.PORT || 3001}`;
 const API = `${BACKEND_URL}/api/ingest`;
@@ -30,9 +44,16 @@ async function tick() {
   const status = weight >= 0 ? 'S' : 'E';
   const raw = `+${weight.toFixed(1)} G ${status}`;
   try {
-    await axios.post(API, { raw, weight, unit:'g', status, process:lastProc, source:'simulator' }, { timeout: 3000 });
+    await axios.post(
+      API,
+      { raw, weight, unit: 'g', status, process: lastProc, source: 'simulator' },
+      { timeout: 3000, ...axiosAuthConfig() }
+    );
     console.log(`[sim ${lastProc}] sent: ${weight} g`);
   } catch (e) { console.error('[sim] error', e.response?.status, e.response?.data || e.message); }
 }
-console.log(`[sim] start: ${MODE} → ${API} every ${TICK_MS} ms`);
+console.log(
+  `[sim] start: ${MODE} → ${API} every ${TICK_MS} ms` +
+    (BASIC_AUTH_USER && BASIC_AUTH_PASS ? ` (basic auth: ${BASIC_AUTH_USER})` : ' (no auth)')
+);
 setInterval(tick, TICK_MS);
